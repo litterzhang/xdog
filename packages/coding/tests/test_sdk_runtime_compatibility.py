@@ -91,7 +91,7 @@ async def owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         agent=Agent(stream, config=AgentConfig(model="offline/model", supports_tool_calls=True), skills=manager),
         session_data=store.create_session(model="offline/model", working_dir=tmp_path), session_manager=store,
         settings=SettingsManager(global_path=tmp_path / "settings.json", project_dir=tmp_path),
-        working_dir=tmp_path, tool_repo=None, bash=None, permissions=PermissionManager("ask"),
+        working_dir=tmp_path, tool_repo=None, permissions=PermissionManager("ask"),
     )
     try:
         yield session, stream

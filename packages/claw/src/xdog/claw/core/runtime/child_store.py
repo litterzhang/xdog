@@ -379,7 +379,7 @@ class ChildStore:
                 if "filesystem_constraints" in record:
                     from xdog.agent.tools.filesystem_constraints import decode_filesystem_roots
                     decode_filesystem_roots(record["filesystem_constraints"])
-                record["config"] = ChildConfig.from_record(record.get("config", {})).to_dict()
+                record["config"] = ChildConfig.from_dict(record.get("config", {})).to_dict()
                 effective = record.get("effective", {})
                 if not isinstance(effective, dict) or set(effective) - {
                         "model", "thinking", "context_window", "max_prompt_tokens", "max_output_tokens",

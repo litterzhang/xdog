@@ -13,7 +13,7 @@ from xdog.ai.types import ThinkingLevel, system_prompt_text
 from xdog.claw.core.compaction.flush_runner import FlushRunner
 from xdog.claw.core.compaction.managed_memory import allowed
 from xdog.claw.core.compaction.summarizer import Summarizer
-from xdog.claw.core.persistence.handoff import INSTRUCTIONS, Draft, capture
+from xdog.claw.core.persistence.handoff import SHORT_CONTEXT, Draft, capture, summary_source
 from xdog.claw.core.persistence.transcript_convert import transcript_to_messages
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ async def prepare(runtime: GroupRuntime, meta: SessionMeta, reason: str,
                   previous: AgentSession | None, adapter: StreamFn) -> Draft:
     live = previous.agent.messages if previous is not None and previous._restored else None
 
-    def snapshot() -> tuple[Draft, list[AgentMessage]]:
+    def snapshot() -> tuple[Draft, list[AgentMessage], str]:
         store = runtime.transcript_store
         with store._lock:
             if store.get_active_session(runtime.group.id) != meta:
@@ -55,12 +55,13 @@ async def prepare(runtime: GroupRuntime, meta: SessionMeta, reason: str,
                             for row in messages_to_dicts(messages)]
                 if wire(list(live)) != wire(transcript_to_messages(rows)):
                     raise ValueError('Unpersisted history before rotation; original context retained')
-            return capture(meta.session_id, rows, reason), transcript_to_messages(rows)
+            return (capture(meta.session_id, rows, reason), transcript_to_messages(rows),
+                    summary_source(meta.session_id, rows))
     if previous is not None:
         previous.require_history_ready()
         if previous.agent.is_streaming or previous._history_commit_task is not None:
             raise RuntimeError('Context handoff requires an idle, durably settled owner')
-    draft, messages = await run_owned(snapshot)
+    draft, messages, source = await run_owned(snapshot)
     if not messages:
         return replace(draft, memory_status="skipped_empty")
     try:
@@ -106,13 +107,12 @@ async def prepare(runtime: GroupRuntime, meta: SessionMeta, reason: str,
         if previous is None:
             return replace(draft, diagnostic="Memory maintenance unavailable; recent source retained.")
         model, stream, options = previous.agent.state.model, previous.agent.stream_fn, previous.agent.options
-    if runtime.summarizer is None:
+    if runtime.summarizer is None or draft.complete and draft.evidence_chars <= SHORT_CONTEXT:
         return draft
     summarizer = Summarizer(model, stream, options)
     try:
         async with asyncio.timeout(60):
-            summary = await summarizer.summarize(messages, instructions=(INSTRUCTIONS
-                + f'\nOriginal session: {meta.session_id}; message indices: 0..{len(messages) - 1}.'))
+            summary = await summarizer.summarize_handoff(source, max_chars=draft.summary_limit)
         return draft.summarized(summary)
     except Exception as exc:
         # Never turn caller cancellation into a committed rotation. Model errors

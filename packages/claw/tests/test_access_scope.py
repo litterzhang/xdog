@@ -183,35 +183,16 @@ def legacy(mode='planning', revision=7):
 
 
 @pytest.mark.parametrize('mode,restricted', [('planning', True), ('off', False), ('executing', False)])
-async def test_legacy_sidecar_restores_access_without_rewriting_then_explicit_control_saves_only_access(
-    host, mode, restricted,
-):
+async def test_retired_planning_sidecar_is_rejected_without_writes(host, mode, restricted):
     store = host.runtime.transcript_store
     meta = store.create_session('main')
     path = store._path(meta.session_id).with_suffix('.plan.json')
     path.write_text(json.dumps(legacy(mode)))
-    original = path.read_bytes()
-    host.runtime.transcript_store = TranscriptStore(store._sessions_dir, owner_group='main')
-    session = host.activate()
-    assert session.access.state == AccessState(restricted, 7)
-    assert path.read_bytes() == original
-    assert not store._path(meta.session_id).with_suffix('.access.json').exists()
-    action = 'release' if restricted else 'restrict'
-    await host.orchestrator.manage_access('main', action, meta.session_id)
-    access_path = store._path(meta.session_id).with_suffix('.access.json')
-    assert json.loads(access_path.read_text()) == AccessState(not restricted, 8).to_dict()
-    assert path.read_bytes() == original
-    fresh = TranscriptStore(store._sessions_dir, owner_group='main')
-    assert fresh.get_access(meta.session_id) == AccessState(not restricted, 8).to_dict()
-    old_scope = session.access
-    host.runtime._drop_session()
-    host.runtime.transcript_store = fresh
-    restarted = host.activate()
-    assert restarted is not session and restarted.meta.session_id == meta.session_id
-    assert restarted.access.state == AccessState(not restricted, 8)
-    with pytest.raises(RuntimeError, match='closed'):
-        old_scope.set_read_only(restricted)
-    assert not host.stream.contexts
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match='Retired planning sidecars'):
+        TranscriptStore(store._sessions_dir, owner_group='main')
+    assert path.read_bytes() == before and not host.stream.contexts
+
 
 
 @pytest.mark.parametrize('new', [False, True])
@@ -225,9 +206,8 @@ async def test_malformed_access_or_legacy_sidecar_refuses_before_agent_or_writab
     path = store._path(meta.session_id).with_suffix('.access.json') if new else old
     path.write_text(json.dumps(value))
     original = path.read_bytes()
-    host.runtime.transcript_store = TranscriptStore(store._sessions_dir, owner_group='main')
-    with pytest.raises(ValueError, match='Invalid|Missing'):
-        host.activate()
+    with pytest.raises(ValueError, match='Retired planning sidecars'):
+        TranscriptStore(store._sessions_dir, owner_group='main')
     assert host.runtime._active_session is None and path.read_bytes() == original and not host.stream.contexts
 
 
@@ -243,19 +223,12 @@ async def test_legacy_branch_access_is_fenced_and_invalid_state_never_changes_cu
     plan_path = store._path(sid, 'old').with_suffix('.plan.json')
     plan_path.write_text(json.dumps({'mode': 'planning', 'revision': 'unsafe'} if bad else legacy()))
     original = plan_path.read_bytes()
-    fresh = TranscriptStore(store._sessions_dir, owner_group='main')
-    host.runtime.transcript_store = fresh
     before, access, revision = session.agent.messages, session.access, host.runtime._source_revision
-    assert not hasattr(session, 'restore_branch')
-    if bad:
-        with pytest.raises(ValueError, match='Invalid'):
-            fresh.branch_access(sid, 'old')
-    else:
-        assert fresh.branch_access(sid, 'old') == AccessState(True, 7).to_dict()
-        assert fresh.load_branch(sid, 'old')[0]['content'] == 'legacy branch context'
+    with pytest.raises(ValueError, match='Retired planning sidecars'):
+        TranscriptStore(store._sessions_dir, owner_group='main')
     assert session.agent.messages == before and session.access is access
-    assert host.runtime._source_revision == revision
-    assert plan_path.read_bytes() == original and not host.stream.contexts
+    assert host.runtime._source_revision == revision and plan_path.read_bytes() == original
+
 
 
 async def test_access_scope_survives_compaction_recovery_branch_and_restart(host):
@@ -333,30 +306,22 @@ async def test_legacy_branch_catalog_fallback_refuses_malformed_access_without_e
     before = store._catalog_file.read_bytes()
     fresh = TranscriptStore(store._sessions_dir, owner_group='main')
     host.runtime.transcript_store = fresh
-    if bad:
-        with pytest.raises(ValueError, match='Invalid'):
-            fresh.branch_access(sid, 'catalog-old')
-        assert store._catalog_file.read_bytes() == before and session.access.state == AccessState()
-    else:
-        assert fresh.branch_access(sid, 'catalog-old') == AccessState(True, 7).to_dict()
-        assert not hasattr(session, 'restore_branch') and session.access.state == AccessState()
+    with pytest.raises(ValueError, match='Retired planning'):
+        fresh.branch_access(sid, 'catalog-old')
+    assert store._catalog_file.read_bytes() == before and session.access.state == AccessState()
     assert not host.stream.contexts
 
 
-@pytest.mark.parametrize('mode,restricted', [('planning', True), ('off', False), ('executing', False)])
-async def test_legacy_branch_import_writes_only_normalized_access_and_safe_catalog_fallback(host, mode, restricted):
+
+@pytest.mark.parametrize('mode', ['planning', 'off', 'executing'])
+async def test_old_branch_plan_cannot_be_imported_or_converted(host, mode):
     session = host.activate()
     store, sid = host.runtime.transcript_store, session.meta.session_id
-    store.save_compaction_checkpoint(sid, 'imported', [], metadata={'plan': legacy(mode)})
-    expected = AccessState(restricted, 7).to_dict()
-    assert store.branch_access(sid, 'imported') == expected
-    row = next(row for row in store.branch_metadata(sid) if row['branch_id'] == 'imported')
-    assert row['access'] == expected and 'plan' not in row
-    sidecar = store._path(sid, 'imported').with_suffix('.access.json')
-    assert json.loads(sidecar.read_text()) == expected
-    sidecar.unlink()  # Older catalogs must retain the same conservative fallback.
-    assert TranscriptStore(store._sessions_dir, owner_group='main').branch_access(sid, 'imported') == expected
-    assert not host.stream.contexts
+    before = store._catalog_file.read_bytes()
+    with pytest.raises(ValueError, match='Retired planning'):
+        store.save_compaction_checkpoint(sid, 'imported', [], metadata={'plan': legacy(mode)})
+    assert store._catalog_file.read_bytes() == before and not host.stream.contexts
+
 
 
 async def test_explicit_cold_restriction_returns_owner_and_empty_old_fence_cannot_release_it(host):
@@ -393,7 +358,7 @@ async def test_missing_branch_sidecar_never_falls_back_from_invalid_catalog_acce
     before = {path.relative_to(store._sessions_dir): path.read_bytes()
               for path in store._sessions_dir.rglob('*') if path.is_file()}
     messages, access, revision = session.agent.messages, session.access, host.runtime._source_revision
-    with pytest.raises(ValueError, match='Invalid|Missing'):
+    with pytest.raises(ValueError, match='Invalid|Missing|Retired'):
         fresh.branch_access(sid, 'invalid-catalog')
     assert not hasattr(session, 'restore_branch')
     assert session.agent.messages == messages and session.access is access

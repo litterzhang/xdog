@@ -4,7 +4,7 @@ Small dependency-free helpers (mirroring the SGR idiom in
 ``claw.channels.tui.tui_app``) used by the builder to render a colored,
 column-aligned TUI.  Foreground/background use scoped resets (``\\x1b[39m`` /
 ``\\x1b[49m``) so a colored foreground composes over a colored background — needed
-for the selection highlight.  Padding/truncation use :func:`tui.visible_width`
+for the selection highlight.  Padding/truncation use :func:`tui.string_width`
 (wcwidth-based, ANSI-aware) so styled cells still align to display columns.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from xdog.tui import strip_ansi, visible_width
+from xdog.tui import string_width, strip_ansi
 
 _FG_RESET = "\x1b[39m"
 _BG_RESET = "\x1b[49m"
@@ -73,7 +73,7 @@ MUTED = "#9aa0a6"      # dim labels / rules
 def pad(cell: str, width: int) -> str:
     """Pad or truncate *cell* to *width* DISPLAY columns (ANSI/wide-char aware).
 
-    Uses :func:`tui.visible_width` so styled cells align.  Truncation drops
+    Uses :func:`tui.string_width` so styled cells align.  Truncation drops
     trailing (visible) characters; any dangling ANSI is closed with a full reset.
     Embedded newlines/tabs are flattened to spaces first, so a cell is always a
     single physical line of exactly *width* columns.
@@ -81,7 +81,7 @@ def pad(cell: str, width: int) -> str:
     if width <= 0:
         return ""
     cell = _flatten(cell)
-    vis = visible_width(cell)
+    vis = string_width(cell)
     if vis == width:
         return cell
     if vis < width:
@@ -100,7 +100,7 @@ def pad(cell: str, width: int) -> str:
             out.append(cell[i : j + 1])
             i = j + 1
             continue
-        w = visible_width(ch)
+        w = string_width(ch)
         if shown + w > width:
             break
         out.append(ch)

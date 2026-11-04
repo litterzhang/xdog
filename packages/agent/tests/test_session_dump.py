@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from xdog.agent.agent import Agent
 from xdog.agent.core import AgentConfig
 from xdog.ai.types import (
@@ -142,25 +143,14 @@ def test_a_live_cancel_handle_is_not_part_of_the_session() -> None:
 
     assert "cancel" not in dumped
     json.dumps(dumped)  # would raise if the Event had come along
-    assert dumped["thinking"] == "low"
+    assert dumped["options"]["thinking"] == "low"
 
 
-def test_restoring_a_partial_dump_leaves_the_rest_alone() -> None:
-    """Absent keys mean "unchanged", not "reset to default" — otherwise a
-    caller restoring only a history would silently wipe the model."""
-    target = _agent(model="gpt-5.6-sol", system_prompt="keep me")
-
-    target.restore({"messages": []})
-
-    assert target.state.model == "gpt-5.6-sol"
-    assert target.state.system_prompt == "keep me"
-
-
-def test_an_empty_dump_changes_nothing() -> None:
-    target = _agent(model="m", system_prompt="p")
-    target.replace_messages([UserMessage(content="hello")])
-
-    target.restore({})
-
-    assert target.state.model == "m"
-    assert len(target.messages) == 1
+@pytest.mark.parametrize('patch', [{}, {'messages': []}, {'messages': None}, {'system_prompt': 'old'}])
+def test_unversioned_dump_is_rejected_atomically(patch):
+    target = _agent(model='m', system_prompt='keep me')
+    target.replace_messages([UserMessage(content='hello')])
+    before = target.dump()
+    with pytest.raises(ValueError):
+        target.restore(patch)
+    assert target.dump() == before

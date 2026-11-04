@@ -49,7 +49,7 @@ def coding_session(tmp_path, host_skill_repo):
                     config=AgentConfig(model='test'), skills=host_skill_repo),
         session_data=data, session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'),
-        tool_repo=None, bash=None, working_dir=tmp_path,
+        tool_repo=None,  working_dir=tmp_path,
     )
     yield session
     session.dispose()
@@ -154,7 +154,7 @@ async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survi
             session = AgentSession(agent=Agent(model,config=AgentConfig(model='test'), skills=host_skill_repo),
                 session_data=manager.load_session(data.session_id),session_manager=manager,
                 settings=SettingsManager(global_path=tmp_path/'settings.json'),
-                working_dir=tmp_path,bash=None,tool_repo=None)
+                working_dir=tmp_path,tool_repo=None)
             ui = InteractiveMode(session)
             await asyncio.to_thread(ui._session_events.start)
             ui._replay_history()
@@ -461,7 +461,7 @@ async def sdk_file_batch(
             session = AgentSession(agent=Agent(model,config=AgentConfig(model='test'), skills=host_skill_repo),
                 session_data=manager.load_session(data.session_id),session_manager=manager,
                 settings=SettingsManager(global_path=tmp_path/'settings.json'),
-                working_dir=tmp_path,bash=None,tool_repo=None)
+                working_dir=tmp_path,tool_repo=None)
             assert await session.send_message('Process all pending evidence') is not None
             assert len(calls)==1 and len(current_inputs(calls[0]))==expected+1
             assert_host_goal_discoverable(calls[0])

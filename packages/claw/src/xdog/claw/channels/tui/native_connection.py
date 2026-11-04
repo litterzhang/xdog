@@ -122,7 +122,6 @@ class NativeConnection:
         command_catalog_supported = False
         command_catalog_generation = 0
         command_menu_dialogs: dict[str, tuple[str, str, int]] = {}
-        mcp_content_types_supported = False
         skills_supported = False
         tool_inventory_supported = False
         tool_inventory_jobs: dict[str, asyncio.Task[None]] = {}
@@ -227,7 +226,7 @@ class NativeConnection:
                             != (data["session_id"], data["revision"])):
                         raise ValueError("Session/context changed before source frame could be sent")
                 if strict:
-                    # The legacy writer swallows disconnects. A delivery grant requires
+                    # The best-effort event writer swallows disconnects. A delivery grant requires
                     # the actual complete result to pass drain without transport failure.
                     if writer.is_closing():
                         raise ConnectionError('Extension message transport closed')
@@ -334,7 +333,7 @@ class NativeConnection:
         mcp_sender = McpSender(
             fetch_mcp,
             lambda group: self._orchestrator.source_lease(group) if self._orchestrator else ("", -1),
-            write, content_types=lambda: mcp_content_types_supported,
+            write,
         )
         try:
             while not reader.at_eof():
@@ -548,9 +547,10 @@ class NativeConnection:
                 if msg_type == 'tool_inventory_read':
                     rid, group, session_id = (request.get(key) for key in ('request_id', 'group_id', 'session_id'))
                     try:
-                        if (not tool_inventory_supported or not isinstance(rid, str) or not 0 < len(rid) <= 128
+                        if (set(request) - {'type', 'request_id', 'group_id', 'session_id'}
+                                or not tool_inventory_supported or not isinstance(rid, str) or not 0 < len(rid) <= 128
                                 or not isinstance(group, str) or not isinstance(session_id, str)
-                                or len(session_id) > 256 or type(request.get('include_selection', False)) is not bool
+                                or len(session_id) > 256
                                 or self._orchestrator is None or len(tool_inventory_jobs) >= 8
                                 or rid in tool_inventory_jobs):
                             raise ValueError('Invalid/unsupported/busy tool inventory request')
@@ -562,7 +562,7 @@ class NativeConnection:
                                      'session_id': session_id, 'success': False})
                         continue
                     async def inventory_job(identifier: str, gid: str, requested_session: str,
-                                            runtime_owner: Any, include_selection: bool) -> None:
+                                            runtime_owner: Any) -> None:
                         sid = requested_session
                         try:
                             # Cold preparation is part of the cancellable job, not
@@ -575,10 +575,6 @@ class NativeConnection:
                             if (not tool_inventory_supported or runtime_owner._active_session is not owner
                                     or owner.meta.session_id != sid or snapshot is None):
                                 raise ValueError('Tool inventory owner unavailable')
-                            if not include_selection:
-                                from xdog.agent.extensions.tool_inventory import SELECTION_FIELDS
-                                snapshot = {key: value for key, value in snapshot.items()
-                                            if key not in SELECTION_FIELDS}
                             await write({'type': 'tool_inventory_result', 'request_id': identifier,
                                          'group_id': gid, 'session_id': sid, 'requested_session_id': requested_session,
                                          'success': True, 'snapshot': snapshot})
@@ -591,8 +587,7 @@ class NativeConnection:
                         finally:
                             if tool_inventory_jobs.get(identifier) is asyncio.current_task():
                                 tool_inventory_jobs.pop(identifier, None)
-                    job = asyncio.create_task(inventory_job(rid, group, session_id, runtime,
-                                                            request.get('include_selection', False)))
+                    job = asyncio.create_task(inventory_job(rid, group, session_id, runtime))
                     tool_inventory_jobs[rid] = job
                     def inventory_done(done: asyncio.Task[None], identifier: str = str(rid)) -> None:
                         if tool_inventory_jobs.get(identifier) is done:
@@ -601,9 +596,6 @@ class NativeConnection:
                     extension_jobs.add(job)
                     job.add_done_callback(extension_jobs.discard)
                     continue
-                if msg_type == "ping" and "mcp_content_types" in request:
-                    mcp_content_types_supported = (type(request["mcp_content_types"]) is int
-                                                   and request["mcp_content_types"] == 1)
                 if msg_type == 'ping' and 'extension_provider_auth' in request:
                     provider_auth_generation += 1
                     provider_auth_supported = (type(request['extension_provider_auth']) is int

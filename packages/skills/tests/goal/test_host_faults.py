@@ -1,5 +1,6 @@
 """Host failures are facts and receipt fences, not Goal business-state changes."""
 import asyncio
+import json
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -10,7 +11,6 @@ from jsonschema import Draft202012Validator
 from xdog.skills.goal.host import OperationContext
 from xdog.skills.goal.runtime import GoalRuntime
 
-from packages.skills.tests.goal.legacy import wait_goal
 from packages.skills.tests.goal.test_reminder_review import receipt_states
 from packages.skills.tests.goal.test_runtime import close, setup
 
@@ -28,7 +28,7 @@ async def test_new_host_wait_rejected_by_tool_schema_service_and_store(tmp_path,
         assert (await tool.execute('denied', args)).is_error
         with pytest.raises(ValueError, match='only user or tasks'):
             await runtime.service.change('wait', until='host', context=USER)
-        with pytest.raises(ValueError, match='historical read-only'):
+        with pytest.raises(ValueError, match='Invalid Goal wait'):
             await runtime.service.store.put(replace(goal, status='waiting', wait_for='host', version=2),
                                             expected_version=1)
         assert await runtime.service.current() == goal
@@ -76,46 +76,17 @@ async def test_failure_fact_survives_reopen_without_changing_business_state(tmp_
         await close(runtime, parent)
 
 
-@pytest.mark.parametrize('receipt', ['pending', 'claimed', 'running', None, 'interrupted'])
-async def test_historical_host_wait_restore_and_explicit_conversion_keep_original_receipt_fence(
-        tmp_path, monkeypatch, receipt):
-    runtime, parent, host, _, sent, _, listeners = await setup(tmp_path, monkeypatch)
-    states = await receipt_states(monkeypatch)
-    import xdog.agent.acp.client as client
-    try:
-        goal = await runtime.service.create('One', 'Retain original accepted work', context=USER)
-        await runtime._wake('original-cause')
-        original = sent[0]
-        states[original.id] = receipt
-        if receipt is None:
-            async def missing(target, identifier=None):
-                return {'messages': []}
-            monkeypatch.setattr(client, 'inbox_status', missing)
-        legacy = await wait_goal(runtime.service, until='host', reason='Historical host error')
-        saved = await runtime.service.store.history(goal.id)
-        await runtime.aclose()
-        runtime = await GoalRuntime.open(host)
-        runtime.attach(parent)
-        listeners[0]({'type': 'owner.available'})
-        await runtime.flush()
-        assert await runtime.service.current() == legacy
-        assert await runtime.service.store.history(goal.id) == saved
-        assert len(sent) == 1
-        with pytest.raises(ValueError, match='user operation'):
-            await runtime.service.change('activate', goal.id, version=legacy.version, reason='automatic event')
-        with pytest.raises(ValueError, match='Resume only'):
-            await runtime.service.change('resume', context=USER)
-        active = await runtime.service.change('activate', goal.id, version=legacy.version,
-                                              reason='Actual user inspected old work', context=USER)
-        await runtime._task_changed(goal.id, SimpleNamespace(id='new-work'))
-        await runtime._available()
-        await runtime.flush()
-        assert await runtime.service.current() == active
-        assert len(sent) == 1  # Explicit conversion does not prove interrupted effects were absent.
-        row = next(row for row in await runtime.service.store.reminders() if row['id'] == original.id)
-        assert row['status'] == 'accepted'
-    finally:
-        await close(runtime, parent)
+def test_host_wait_is_not_a_persistable_goal_state():
+    from xdog.skills.goal.codec import decode_goal, encode_goal, json_text
+    from xdog.skills.goal.models import Goal
+    goal = Goal('id', 'Title', 'Outcome')
+    with pytest.raises(ValueError, match='Invalid Goal wait'):
+        replace(goal, status='waiting', wait_for='host')
+    data = json.loads(encode_goal(goal))
+    data.update(status='waiting', wait_for='host')
+    with pytest.raises(ValueError):
+        decode_goal(json_text(data))
+
 
 
 @pytest.mark.parametrize('retiring', [False, True])

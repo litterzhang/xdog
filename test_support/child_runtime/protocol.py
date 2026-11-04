@@ -8,7 +8,6 @@ import threading
 
 import pytest
 from xdog.agent import Agent, AgentConfig, AgentTool, AgentToolResult, HandledInput
-from xdog.agent.child_config import ChildPresets
 from xdog.agent.children import ChildSpec, child_prompt
 from xdog.agent.events import MessageEndEvent
 from xdog.ai.types import AssistantMessage, DoneEvent, TextContent, ToolCall
@@ -20,48 +19,21 @@ def facts(events):
 
 
 class TestChildProtocol:
-    async def test_old_true_is_inert_history_and_cannot_admit_new_inherited_work(
-        self, tmp_path, monkeypatch, *, runtime_factory, child_store_type, execution_owner
+    async def test_old_inheritance_record_cannot_be_loaded_or_admitted(
+        self, tmp_path, *, runtime_factory, child_store_type
     ):
         store = child_store_type(tmp_path)
-        store.begin(ChildSpec("0123456789ab", "old task"))
+        store.begin(ChildSpec('0123456789ab', 'old task'))
         old = store.load()[0]
-        old["config"]["inherit_context"] = True
+        old['config']['inherit_context'] = True
         store.save(old)
-        restored = runtime_factory(lambda *args: pytest.fail("No historical replay"), records=store.load())
-        metadata_operations = []
-        original_control = restored._control
+        before = (store.root / (old['id'] + '.json')).read_bytes()
+        with pytest.raises(ValueError):
+            store.load()
+        with pytest.raises(ValueError):
+            runtime_factory(lambda *args: pytest.fail('No historical replay'), records=[old])
+        assert (store.root / (old['id'] + '.json')).read_bytes() == before
 
-        async def control_on_owner(action, identifier, *args, **kwargs):
-            result = await original_control(action, identifier, *args, **kwargs)
-            assert asyncio.get_running_loop() is restored._loop
-            execution_owner.assert_running(restored)
-            metadata_operations.append((action, identifier))
-            return result
-
-        monkeypatch.setattr(restored, "_control", control_on_owner)
-        try:
-            record = await restored.control("inspect", old["id"])
-            assert record["config"]["inherit_context"] is True and not restored.active
-            assert metadata_operations == [("inspect", old["id"])]
-            # Coding may retire its idle metadata owner now; Claw keeps its borrowed loop.
-        finally:
-            await restored.aclose()
-        execution_owner.assert_closed(restored)
-        owner = runtime_factory(lambda *args: pytest.fail("Invalid admission"))
-        try:
-            with pytest.raises(ValueError):
-                await owner.start("task", inherit_context=True, config={"inherit_context": False})
-            with pytest.raises(ValueError):
-                await owner.start("task", config={"inherit_context": True})
-            with pytest.raises(ValueError):
-                await owner.tools()[0].execute("call", {"action": "spawn", "task": "task", "inherit_context": True})
-            execution_owner.assert_unstarted(owner)
-        finally:
-            await owner.aclose()
-        # Historical preset templates may be reused only as fresh independent children.
-        presets = ChildPresets.from_snapshot([{"name": "old", "description": "", "config": old["config"]}])
-        assert presets.resolve({"preset": "old"}).inherit_context is False
 
     async def test_prompt_update_before_first_request_busy_refusal_and_stopped_metadata_only(
         self, tmp_path, *, runtime_factory, child_store_type
@@ -89,7 +61,7 @@ class TestChildProtocol:
 
                 return EventStream.from_async_generator(generate(), result_future=completed)
 
-            agent = Agent(stream, config=AgentConfig(model="test/model", system_prompt=child_prompt("", spec)))
+            agent = Agent(stream, config=AgentConfig(model="test/model", system_prompt=child_prompt(spec)))
             agents.append(agent)
             return agent
 

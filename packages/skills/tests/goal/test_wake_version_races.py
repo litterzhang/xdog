@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock
 import pytest
 from xdog.skills.goal.host import OperationContext, OwnerRetired
 
-from packages.skills.tests.goal.legacy import wait_goal
 from packages.skills.tests.goal.test_reminder_review import receipt_states
 from packages.skills.tests.goal.test_runtime import close, setup
 
@@ -120,7 +119,7 @@ async def test_old_available_failure_cannot_fence_a_resumed_epoch(tmp_path, monk
         await close(runtime, parent)
 
 
-@pytest.mark.parametrize('fence', ['user', 'host', 'paused', 'retired'])
+@pytest.mark.parametrize('fence', ['user', 'paused', 'retired'])
 async def test_invalidated_wake_does_not_cross_a_protected_fence(tmp_path, monkeypatch, fence):
     runtime, parent, host, state, sent, _, _ = await setup(tmp_path, monkeypatch)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -144,9 +143,17 @@ async def test_invalidated_wake_does_not_cross_a_protected_fence(tmp_path, monke
         elif fence == 'paused':
             await runtime.service.change('pause', context=USER)
         else:
-            await wait_goal(runtime.service, until=fence,
-            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
-                'resume_when': 'User selects target'} if fence == 'user' else {}))
+            await runtime.service.change(
+                "wait",
+                until=fence,
+                **{
+                    "question": "Which delivery target?",
+                    "impact": "Final target unknown",
+                    "resume_when": "User selects target",
+                }
+                if fence == "user"
+                else {},
+            )
         await runtime.flush()
         release.set()
         if fence == 'retired':

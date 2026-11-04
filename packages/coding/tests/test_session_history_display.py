@@ -1,6 +1,5 @@
 """Replay merges display sidecars with canonical input chronology, without execution."""
 
-from xdog.agent import CustomAgentMessage
 from xdog.agent.session_input import SessionInput, encode_input
 from xdog.ai.types import AssistantMessage, TextContent, UserMessage
 from xdog.coding.core.sessions.models import InputRecord
@@ -50,37 +49,6 @@ def test_replay_interrupted_sidecar_does_not_enter_history_or_invent_a_model_ans
         assert "not model context" in output
         assert coding_session.messages == [] and coding_session.runtime is None
         assert not ui._editor._history
-    finally:
-        ui._request_exit()
-
-
-def test_legacy_event_replay_retains_handling_instruction_and_evidence_without_host_startup(coding_session):
-    from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
-
-    legacy = {
-        "id": "old",
-        "registration_id": "reg",
-        "route_id": "route",
-        "delivery_ids": ["delivery"],
-        "instruction": "Legacy handling requirement",
-        "events": [
-            {
-                "id": "event",
-                "source_id": "files",
-                "type": "file_changed",
-                "observed_at": 1,
-                "evidence": [{"path": "old.py", "before": "a", "after": "b"}],
-            }
-        ],
-    }
-    coding_session.agent.replace_messages([CustomAgentMessage(type="xdog.external_event.v1", data=legacy)])
-    ui = InteractiveMode(coding_session)
-    try:
-        ui._replay_history()
-        output = "\n".join(strip_ansi(line) for line in ui._chat_log.render(100))
-        assert "Legacy handling requirement" in output and "old.py" in output
-        assert "External input" in output and "not a human" in output
-        assert coding_session.runtime is None
     finally:
         ui._request_exit()
 

@@ -156,7 +156,7 @@ async def maximum_input(manager,root):
   return EventStream.empty(AssistantMessage(content=(TextContent(text='maximum handled'),)))
  session=AgentSession(agent=Agent(model,config=AgentConfig(model='test'),skills=SkillRepo().register(directory=root/'skills')),
   session_data=manager.load_session(data.session_id),session_manager=manager,
-  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_repo=None,bash=None)
+  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_repo=None)
  runtime=SessionRuntime(session,bound=True,inbox_store=store)
  runtime.start(setup_pending=True)
  try:
@@ -186,7 +186,7 @@ async def main():
   return EventStream.empty(AssistantMessage(content=(TextContent(text='wheel batch answer'),)))
  session=AgentSession(agent=Agent(model,config=AgentConfig(model='test'),skills=SkillRepo().register(directory=root/'skills')),
   session_data=manager.load_session(data.session_id),session_manager=manager,
-  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_repo=None,bash=None)
+  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_repo=None)
  try:
   response=await session.send_message('Process all retained evidence')
   assert response.content==(TextContent(text='wheel batch answer'),)
@@ -334,7 +334,7 @@ def main() -> None:
                 native_probe.write_text(Path(__file__).with_name('verify_claw_native_artifact.py').read_text())
                 subprocess.run([str(python), str(native_probe)], env=environment, cwd=work, check=True, timeout=30)
                 observer_probe = work / 'observer_output_consumer.py'
-                observer_probe.write_text(Path(__file__).with_name('verify_claw_observer_output_artifact.py').read_text())
+                observer_probe.write_text(Path(__file__).with_name('verify_claw_eyes_artifact.py').read_text())
                 subprocess.run([str(python), str(observer_probe)], env=environment, cwd=work, check=True, timeout=40)
             if name == 'eyes':
                 subprocess.run([str(env / 'bin' / 'xdog-eyes'), '--help'],

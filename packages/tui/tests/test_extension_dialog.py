@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from xdog.tui.components.extension_dialog import ExtensionDialog
 from xdog.tui.keys import KeyEvent
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 
 def test_visible_confirmation_navigation_paste_and_cancel_are_not_implicit_approval():
@@ -35,7 +35,7 @@ def test_input_and_selection_render_bounds_and_control_code_sanitization():
             panel.set_render_budget(height)
             for width in (0, 1, 24, 80):
                 lines = panel.render(width)
-                assert len(lines) <= height and all(visible_width(line) <= width for line in lines)
+                assert len(lines) <= height and all(string_width(line) <= width for line in lines)
                 assert "\x1b]52" not in "\n".join(lines)
         panel.handle_input(KeyEvent("escape"))
         assert answers == [None]

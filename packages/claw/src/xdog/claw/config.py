@@ -139,8 +139,6 @@ class ClawConfig:
 
     xhs_enabled: bool = False
     xhs_group_id: str = 'main'
-    xhs_base_url: str = 'http://127.0.0.1:18060'
-    xhs_token_env: str = 'XHS_API_TOKEN'
     xhs_poll_seconds: float = 60
     xhs_replies_enabled: bool = False
     xhs_publish_enabled: bool = False

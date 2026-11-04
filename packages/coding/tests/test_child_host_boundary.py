@@ -61,15 +61,15 @@ async def test_coding_owns_runtime_and_child_keeps_no_parent_conversation_transf
     session.children.runtime.factory = factory
     session.children.runtime.subscribe(events.append)
     try:
-        identifier = await session.children.runtime.start('TASK KNOWLEDGE', config={
-            'system_prompt': 'INDEPENDENT CHILD ROLE', 'instructions': 'LEGACY TASK MATERIALS', 'tools': []})
+        identifier = await session.children.runtime.start('TASK KNOWLEDGE\nEXPLICIT TASK MATERIALS', config={
+            'system_prompt': 'INDEPENDENT CHILD ROLE', 'tools': []})
         record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed', record['error']
         assert not calls and len(contexts) == 1 and len(contexts[0].messages) == 1
         assert 'INDEPENDENT CHILD ROLE' in str(contexts[0].system_prompt)
-        assert 'LEGACY TASK MATERIALS' not in str(contexts[0].system_prompt)
+        assert 'EXPLICIT TASK MATERIALS' not in str(contexts[0].system_prompt)
         assert 'TASK KNOWLEDGE' in str(contexts[0].messages[0].content)
-        assert 'LEGACY TASK MATERIALS' in str(contexts[0].messages[0].content)
+        assert 'EXPLICIT TASK MATERIALS' in str(contexts[0].messages[0].content)
         assert 'PARENT ' not in str(contexts[0])
         child = agents[0]
         assert child.parent is not None and child.parent.live
@@ -79,7 +79,7 @@ async def test_coding_owns_runtime_and_child_keeps_no_parent_conversation_transf
         assert session.agent.messages[0].content == 'PARENT HISTORY SECRET'
         facts = [row for row in events if row['type'] == 'child_message']
         assert [row['direction'] for row in facts] == ['parent_to_child', 'child_to_parent']
-        assert 'LEGACY TASK MATERIALS' in facts[0]['text'] and facts[0]['status'] == 'admitted'
+        assert 'EXPLICIT TASK MATERIALS' in facts[0]['text'] and facts[0]['status'] == 'admitted'
         assert facts[1]['text'] == 'child done' and facts[1]['status'] == 'completed'
     finally:
         await close(session)
@@ -205,7 +205,7 @@ async def test_model_boundary_rechecks_actual_parent_and_skill_revocation_before
         await close(session)
 
 
-async def test_failed_unadmitted_legacy_task_image_recovery_keeps_all_materials(tmp_path):
+async def test_failed_unadmitted_explicit_task_image_recovery_keeps_all_materials(tmp_path):
     from xdog.ai.types import ImageContent
 
     from packages.coding.tests.extension_session_helpers import PNG
@@ -215,7 +215,7 @@ async def test_failed_unadmitted_legacy_task_image_recovery_keeps_all_materials(
         raise RuntimeError('factory unavailable before first input admission')
     session.children.runtime.factory = unavailable
     try:
-        identifier = await session.children.runtime.start('TASK', config={'instructions': 'LEGACY MATERIALS'},
+        identifier = await session.children.runtime.start('TASK\nEXPLICIT MATERIALS', config={},
             images=(ImageContent(data=PNG, mime_type='image/png'),))
         record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'failed' and not contexts
@@ -224,9 +224,9 @@ async def test_failed_unadmitted_legacy_task_image_recovery_keeps_all_materials(
         recovered = await session.children.runtime.control('queue', identifier, json.dumps({
             'action': 'recover_task', 'id': initial['id'], 'revision': queue['revision']}))
         assert 'TASK' in recovered['queue']['recovered']['content']
-        assert 'LEGACY MATERIALS' in recovered['queue']['recovered']['content']
+        assert 'EXPLICIT MATERIALS' in recovered['queue']['recovered']['content']
         assert recovered['image_recovery']['images'][0]['data'] == PNG
-        assert 'LEGACY MATERIALS' in recovered['image_recovery']['receipt']['content']
+        assert 'EXPLICIT MATERIALS' in recovered['image_recovery']['receipt']['content']
         assert not contexts and record['messages'] == []
     finally:
         session.children.runtime.factory = original

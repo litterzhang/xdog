@@ -1,4 +1,4 @@
-"""Durable intake order, non-permission claims and conservative version migration."""
+"""Durable intake order, non-permission claims and strict current-record validation."""
 import hashlib
 import json
 import subprocess
@@ -135,21 +135,22 @@ def write_legacy(store, message, status):
     return path
 
 
-def test_legacy_migration_retains_attempt_facts_and_blocks_running_replay(inbox):
+@pytest.mark.parametrize('version', [1, 2])
+def test_old_inbox_records_are_rejected_without_rewriting_or_replay(inbox, version):
     store, message = inbox
-    paths = [write_legacy(store, replace(message, message_id=str(i)), status)
-             for i, status in enumerate(('pending_review', 'approved', 'running', 'succeeded'))]
-    rows = store.recover(message.session_id, 'new')
-    assert [row.status for row in rows] == ['pending', 'pending', 'interrupted', 'succeeded']
-    assert rows[1].attempts[0].id == 'attempt-1'
-    assert rows[1].attempts[0].status == 'approved'  # Historical fact, never current authority.
-    assert not rows[1].attempt_id and not rows[1].owner_generation
-    assert rows[2].attempts[0].status == 'interrupted' and rows[2].attempt_id == 'attempt-2'
-    assert all(row.message.provenance == {'legacy': True} for row in rows)
-    persisted = [json.loads(path.read_text()) for path in store.root.rglob('*.json')]
-    assert len(persisted) == len(paths) and all(row['version'] == 2 for row in persisted)
-    assert [row.sequence for row in rows] == [1, 2, 3, 4]
-    assert store.recover(message.session_id, 'new') == rows
+    if version == 1:
+        path = write_legacy(store, message, 'running')
+    else:
+        store.enqueue(message)
+        path = next(store.root.rglob('*.json'))
+        data = json.loads(path.read_text())
+        data.update(version=2, legacy_order=False)
+        path.write_text(json.dumps(data))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match='Unsupported inbox record version'):
+        store.recover(message.session_id, 'new')
+    assert path.read_bytes() == before
+
 
 
 @pytest.mark.parametrize('stage,expected', [('reserve', 'pending'), ('running', 'interrupted')])

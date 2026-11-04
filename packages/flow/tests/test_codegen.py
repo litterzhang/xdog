@@ -19,6 +19,7 @@ import types
 import uuid
 from pathlib import Path
 
+import pytest
 from xdog.flow.codegen import generate
 from xdog.flow.events import NodeFinished, NodeStarted
 from xdog.flow.executor import ExecResult, execute
@@ -2015,3 +2016,66 @@ async def test_manifest_builtin_override_uses_sdk_repo_in_both_engines() -> None
         assert tool.execute is not None
         result = await tool.execute("manifest", {"text": "abc"})
         assert result.content[0].text == "cba"
+
+
+async def test_seeded_small_dag_interpreter_codegen_differential() -> None:
+    """Reproducible joins, parallel frontiers and cross edges, without model IO."""
+    import random
+
+    for seed in range(12):
+        rng = random.Random(seed)
+        nodes, edges = [], []
+        for index in range(rng.randint(3, 8)):
+            name = f'n{index}'
+            parents = sorted(rng.sample(range(index), rng.randint(0, min(index, 3))))
+            ports = tuple(Port(f'p{parent}') for parent in parents)
+            parameters = ''.join(f', p{parent}' for parent in parents)
+            expression = ' + '.join([repr(name), *(f'p{parent}' for parent in parents)])
+            nodes.append(NodeDef(id=name, type='script', code=f'def {name}(ctx{parameters}):\n    return {expression}',
+                                 input_ports=ports, output_ports=(Port('value'),)))
+            edges.extend(EdgeDef(src=f'n{parent}', dst=name, mapping=(('value', f'p{parent}'),)) for parent in parents)
+        wf = WorkflowDef(name=f'seed-{seed}', provider='', entry='', nodes=tuple(nodes), edges=tuple(edges))
+        interpreted = await execute(wf)
+        generated = await _run_generated(wf)
+        assert generated == _interp_out(interpreted), f'Differential seed {seed}'
+
+
+async def test_interpreter_and_generated_checkpoint_are_mutually_resumable(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from xdog.flow.checkpoint import JSONFileCheckpointStore
+    checkpoint_dir = tmp_path / 'checkpoints'
+    store = JSONFileCheckpointStore(checkpoint_dir)
+    witness = tmp_path / 'completed-node-count'
+    wf = WorkflowDef(name='cross-checkpoint', provider='', entry='', nodes=(
+        NodeDef(id='first', type='script', code=(
+            f'def first(ctx):\n    from pathlib import Path\n    p = Path({str(witness)!r})\n'
+            '    p.write_text(p.read_text() + "x" if p.exists() else "x")\n    return "kept"'),
+                output_ports=(Port('v'),)),
+        NodeDef(id='second', type='script', code='def second(ctx, v):\n    raise RuntimeError("stop")',
+                input_ports=(Port('v'),), output_ports=(Port('v'),)),
+    ), edges=(EdgeDef(src='first', dst='second', mapping=(('v', 'v'),)),))
+    repaired = replace(wf, nodes=(wf.nodes[0], replace(wf.nodes[1], code='def second(ctx, v):\n    return v + "!"')))
+    monkeypatch.setenv('FLOW_WORKSPACE', str(tmp_path))
+    monkeypatch.setenv('FLOW_RUN_ID', 'cross')
+    monkeypatch.setenv('FLOW_CHECKPOINT_DIR', str(checkpoint_dir))
+    for first_generated in (False, True):
+        (checkpoint_dir / 'cross.json').unlink(missing_ok=True)
+        witness.unlink(missing_ok=True)
+        if first_generated:
+            with pytest.raises(RuntimeError, match='stop'):
+                await _run_generated(wf)
+            result = await execute(repaired, checkpoint=store, run_id='cross')
+            assert result.runtime['state']['second']['v'] == 'kept!'
+        else:
+            with pytest.raises(RuntimeError, match='stop'):
+                await execute(wf, checkpoint=store, run_id='cross')
+            result = await _run_generated(repaired)
+            assert result['second']['v'] == 'kept!'
+        assert witness.read_text() == 'x'  # Completed work was not replayed.
+        changed = replace(repaired, nodes=(replace(wf.nodes[0], code='def first(ctx):\n    return "drift"'),
+                                          repaired.nodes[1]))
+        with pytest.raises(Exception, match='Completed checkpoint node changed') as error:
+            await _run_generated(changed)
+        assert type(error.value).__name__ == 'WorkflowExecutionError'  # Standalone generated class.
+        assert witness.read_text() == 'x'

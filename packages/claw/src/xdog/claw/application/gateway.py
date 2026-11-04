@@ -161,7 +161,7 @@ class GatewayServer:
         try:
             for runtime in self._orchestrator._runtimes.values():
                 current = runtime.get_new_session_id() or ""
-                selected = await run_owned(runtime.transcript_store.get_extension_model, current) if current else ""
+                selected = await run_owned(runtime.transcript_store.get_model, current) if current else ""
                 if runtime.model.startswith("ext-") or selected:
                     session = await runtime.prepare_session(allow_reset=False)
                     await session.initialize_extensions(require_model=True)
@@ -206,7 +206,7 @@ class GatewayServer:
                 if cfg.xhs_group_id not in self._orchestrator.get_group_ids():
                     raise ValueError('XHS target group must be explicitly configured')
                 xhs = XhsChannel(Path(cfg.data_dir), cfg.xhs_group_id,
-                    XhsApi(cfg.xhs_base_url, token_env=cfg.xhs_token_env), poll_seconds=cfg.xhs_poll_seconds,
+                    XhsApi(Path(cfg.data_dir), cfg.xhs_group_id), poll_seconds=cfg.xhs_poll_seconds,
                     replies_enabled=cfg.xhs_replies_enabled, publish_enabled=cfg.xhs_publish_enabled)
                 self._orchestrator.add_channel(xhs)
                 await xhs.connect()

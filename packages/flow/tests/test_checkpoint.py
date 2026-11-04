@@ -283,6 +283,7 @@ def node2(ctx, val: str) -> str:
     snap = store.load(run_id)
     assert snap is not None
     assert set(snap) == {
+        "contract",
         "outputs",
         "sessions",
         "completed",
@@ -339,3 +340,50 @@ def node2(ctx, val: str) -> str:
 
     state = result.runtime["state"]
     assert state["node2"]["final"] == "done_node1_out"
+
+
+@pytest.mark.parametrize('change', [
+    'completed_body', 'reopened_completed', 'wiring', 'ports', 'inputs', 'malformed_outputs',
+])
+async def test_resume_rejects_drift_before_any_new_side_effect(tmp_path, change):
+    from dataclasses import replace
+
+    from xdog.flow.executor import WorkflowExecutionError
+
+    witness = tmp_path / 'executed'
+    wf = WorkflowDef(name='drift', provider='', entry='', initial_state=(('x', 'old'),), nodes=(
+        NodeDef(id='first', type='script', code='def first(ctx, x):\n    return x',
+                input_ports=(Port('x'),), output_ports=(Port('v'),)),
+        NodeDef(id='second', type='script', code='def second(ctx, v):\n    raise RuntimeError("stop")',
+                input_ports=(Port('v'),), output_ports=(Port('v'),)),
+    ), edges=(EdgeDef(src='$in', dst='first', mapping=(('x', 'x'),)),
+              EdgeDef(src='first', dst='second', mapping=(('v', 'v'),))))
+    store = JSONFileCheckpointStore(tmp_path / 'checkpoints')
+    with pytest.raises(RuntimeError, match='stop'):
+        await execute(wf, checkpoint=store, run_id='run', workspace=tmp_path)
+    repaired = replace(wf.nodes[1], code=f'def second(ctx, v):\n    open({str(witness)!r}, "w").write(v)\n    return v')
+    resumed = replace(wf, nodes=(wf.nodes[0], repaired))
+    inputs = None
+    if change in {'completed_body', 'reopened_completed'}:
+        if change == 'reopened_completed':
+            snapshot = store.load('run')
+            snapshot['completed'] = []  # A loop reopens its frontier without erasing old computations.
+            store.save('run', snapshot)
+        changed = replace(wf.nodes[0], code='def first(ctx, x):\n    return "changed"')
+        resumed = replace(resumed, nodes=(changed, repaired))
+    elif change == 'wiring':
+        resumed = replace(resumed, edges=())
+    elif change == 'ports':
+        resumed = replace(resumed, nodes=(replace(wf.nodes[0], output_ports=(Port('other'),)), repaired))
+    elif change == 'inputs':
+        inputs = {'x': 'new'}
+    else:
+        snapshot = store.load('run')
+        snapshot['outputs'] = []
+        store.save('run', snapshot)
+        inputs = {'x': 'old'}
+    before = (tmp_path / 'checkpoints/run.json').read_bytes()
+    with pytest.raises(WorkflowExecutionError, match='Checkpoint|checkpoint'):
+        await execute(resumed, checkpoint=store, run_id='run', inputs=inputs, workspace=tmp_path)
+    assert not witness.exists()
+    assert (tmp_path / 'checkpoints/run.json').read_bytes() == before

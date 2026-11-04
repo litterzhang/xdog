@@ -21,7 +21,6 @@ def coding_session(tmp_path):
         session_manager=manager,
         settings=SettingsManager(),
         tool_repo=None,
-        bash=None,
         working_dir=tmp_path,
     )
     yield value

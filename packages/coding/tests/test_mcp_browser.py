@@ -32,7 +32,7 @@ def make_ui(tmp_path, *, peer=FIXTURE, mode="modern"):
     session = AgentSession(agent=Agent(stream, config=AgentConfig(model="test/model")),
                            session_data=manager.create_session(model="test/model", working_dir=tmp_path),
                            session_manager=manager, settings=SettingsManager(global_path=settings),
-                           working_dir=tmp_path, tool_repo=None, bash=None)
+                           working_dir=tmp_path, tool_repo=None)
     ui = InteractiveMode(session)
     return ui, session, provider_calls, log
 
@@ -65,7 +65,8 @@ def test_browser_focus_restores_after_approval_output_cancel_and_replacement(tmp
         assert ui._mcp_panel is panel and ui._transcript_panel is None
         approval._on_decision("deny")
         assert ui._tui._focused is panel
-        ui._mcp_document = McpDocument("fixture", "resource", "uri", (McpBlock("resource", data="AAECAw=="),))
+        ui._mcp_document = McpDocument("fixture", "resource", "uri", (
+            McpBlock("resource", data="AAECAw==", content_type="resource_blob"),))
         ui._mcp_insert()
         assert ui._mcp_panel is panel and ui._editor.get_text() == "" and not calls
         ui._mcp_export()
@@ -112,7 +113,8 @@ def test_browser_close_cancels_read_and_ignores_late_preview(tmp_path):
         panel = ui._mcp_panel
         wait_ui(ui, lambda: not panel._busy)
         ui._event_queue.put({"type": "mcp_view_result", "id": identifier, "action": "read",
-                             "data": McpDocument("fixture", "resource", "uri", (McpBlock("resource", "late"),))})
+                             "data": McpDocument("fixture", "resource", "uri", (
+                                 McpBlock("resource", "late", content_type="text"),))})
         ui._poll()
         assert panel._mode == "servers" and ui._mcp_document is None and not calls
         ui._output_epoch += 1

@@ -29,7 +29,7 @@ from xdog.flow.models import NodeDef, Port
 from xdog.flow.tools import ToolInfo, describe_tools, read_run_source
 from xdog.tui.keys import KeyEvent
 from xdog.tui.tui import TUI, Component
-from xdog.tui.utils import visible_width, wrap_text_with_ansi
+from xdog.tui.utils import string_width, wrap_text_with_ansi
 
 _MIN_WIDTH = 60
 _LEFT_MAX = 40
@@ -110,7 +110,7 @@ class BuilderApp(Component):
         # UI never collapses to all-empty lines.
         w = max(width, _MIN_WIDTH)
         left_w = min(_LEFT_MAX, max(24, w * 2 // 5))
-        right_w = max(20, w - left_w - visible_width(_GAP))
+        right_w = max(20, w - left_w - string_width(_GAP))
 
         # Header + footer chrome is fixed height; the body fills the rest of the
         # screen.  The left list stays put while the right (detail/source) pane
@@ -193,9 +193,9 @@ class BuilderApp(Component):
         """
         inner_w = max(1, width - 2)
         label = f"─ {title} "
-        if visible_width(label) > inner_w:
+        if string_width(label) > inner_w:
             label = label[:inner_w]
-        fill = inner_w - visible_width(label)
+        fill = inner_w - string_width(label)
         top = "┌" + label + "─" * fill + "┐"
         bot = "└" + "─" * inner_w + "┘"
         if wrap:

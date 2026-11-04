@@ -272,7 +272,7 @@ async def test_scheduler_enqueue_survives_no_owner_then_uses_existing_sdk_batch(
             session = AgentSession(agent=Agent(model, config=AgentConfig(model='test'), skills=host_skill_repo),
                 session_data=manager.load_session(session_data.session_id), session_manager=manager,
                 settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-                bash=None, tool_repo=None)
+                 tool_repo=None)
             response = await session.send_message('Process the retained scheduled observation')
             assert response.content == (TextContent(text='Timed review complete'),)
             assert len(calls) == 1 and len(calls[0][1].messages) == 2

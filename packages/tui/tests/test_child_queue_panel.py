@@ -7,7 +7,7 @@ import inspect
 import pytest
 from xdog.tui.components.child_queue_panel import ChildQueuePanel
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 def data():
@@ -176,7 +176,7 @@ def test_tiny_unicode_control_text_clipping_and_paste_never_gain_mutation_author
     for key in ('x', 'e', 'u', 'j', 'k', 'end', 'home', 'enter'):
         panel.handle_input(KeyEvent(key))
         rendered = panel.render(width)
-        assert len(rendered) <= budget and all(visible_width(row) <= width for row in rendered)
+        assert len(rendered) <= budget and all(string_width(row) <= width for row in rendered)
         assert all('\x1b' not in strip_ansi(row) for row in rendered)
     panel.handle_paste('\n/quit')
     assert not sent

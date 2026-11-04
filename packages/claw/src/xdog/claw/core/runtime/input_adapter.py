@@ -136,6 +136,6 @@ def same_channel_submission(original: InputEnvelope, offered: InputEnvelope) -> 
             != {key: value for key, value in new.items() if key not in policy}):
         return False
     old_identity, new_identity = old.get('identity'), new.get('identity')
-    if old_identity is not None and new_identity is not None:
-        return InputIdentity.from_dict(old_identity).source == InputIdentity.from_dict(new_identity).source
-    return old_identity is None  # An accepted legacy row stays legacy/unexecutable, never upgraded.
+    if old_identity is None or new_identity is None:
+        return False
+    return InputIdentity.from_dict(old_identity).source == InputIdentity.from_dict(new_identity).source

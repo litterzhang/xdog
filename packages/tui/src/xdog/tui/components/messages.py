@@ -257,6 +257,6 @@ class AssistantMessages(Container):
         self.thinking_message.set_expanded(expanded)
 
     def render(self, width: int) -> list[str]:
-        # Standalone compatibility; transcript stores the two children directly.
+        # Standalone rendering shares transcript spacing; transcripts flatten the two children.
         rows = Transcript.render(self, width)  # type: ignore[arg-type]
         return rows

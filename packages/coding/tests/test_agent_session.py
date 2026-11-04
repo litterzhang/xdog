@@ -49,7 +49,6 @@ def test_agent_session_branching(session_mgr, tmp_path):
         session_manager=session_mgr,
         settings=SettingsManager(),
         tool_repo=None,
-        bash=None,
         working_dir=tmp_path,
     )
 

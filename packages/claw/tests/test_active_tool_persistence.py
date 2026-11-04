@@ -1,7 +1,6 @@
 """Claw context selections survive restart; historical routes remain read-only."""
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 from pathlib import Path
@@ -68,8 +67,7 @@ async def test_restart_preserves_selection_new_context_does_not_switch_back(tmp_
         assert restored.agent.active_tool_selection == (None if expected is None else ())
         await restored.initialize_extensions()
         assert restored.agent.active_tool_selection == expected
-        with pytest.raises(ValueError, match='read-only'):
-            await asyncio.to_thread(reopened.navigate_session, 'fork', identifier, '', -1, identifier)
+        assert not hasattr(reopened, "navigate_session")
         assert reopened.transcript_store.list_branches(identifier) == []
         reopened.reset_session()
         fresh = reopened.get_or_create_session(allow_reset=False)
@@ -83,8 +81,7 @@ async def test_restart_preserves_selection_new_context_does_not_switch_back(tmp_
         assert handoff['type'] == 'xdog.claw.handoff.v1'
         assert handoff['data']['source_session_id'] == identifier
         assert handoff['data']['status'] == 'recent_only'  # Sync composition never calls a model.
-        with pytest.raises(ValueError, match='read-only'):
-            await asyncio.to_thread(reopened.navigate_session, 'resume', identifier, '', -1, fresh.meta.session_id)
+        assert not hasattr(reopened, "navigate_session")
         assert reopened._active_session is fresh
         assert reopened.transcript_store.get_active_tools(identifier) == expected
         assert not calls and not later_calls
@@ -140,8 +137,7 @@ async def test_compaction_checkpoint_selection_is_readable_but_cannot_be_activat
         identifier = session.meta.session_id
         assert store.get_active_tools(identifier, recovery) == ('current_time',)
         await session.select_active_tools([], expected_revision=session.agent.tool_selection_revision)
-        with pytest.raises(ValueError, match='read-only'):
-            await asyncio.to_thread(runtime.navigate_session, 'branch', identifier, recovery, -1, identifier)
+        assert not hasattr(runtime, "navigate_session")
         assert runtime._active_session is session and session.agent.active_tool_selection == ()
         assert store.get_active_tools(identifier, recovery) == ('current_time',)
         assert not any(row.get('label', '').startswith('Return checkpoint')

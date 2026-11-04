@@ -7,8 +7,6 @@ from xdog.skills.goal.models import Owner
 from xdog.skills.goal.service import GoalService
 from xdog.skills.goal.store import GoalStore
 
-from packages.skills.tests.goal.legacy import wait_goal
-
 USER = OperationContext(True)
 
 
@@ -84,16 +82,25 @@ async def test_only_task_wait_can_be_released_by_an_automatic_input(tmp_path):
     service = await opened(tmp_path)
     try:
         await service.create('One', 'Original', context=USER)
-        for until in ['user', 'host']:
-            await wait_goal(service, until=until, reason='Needs actual input',
-            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
-                'resume_when': 'User selects target'} if until == 'user' else {}))
+        for until in ['user']:
+            await service.change(
+                "wait",
+                until=until,
+                reason="Needs actual input",
+                **{
+                    "question": "Which delivery target?",
+                    "impact": "Final target unknown",
+                    "resume_when": "User selects target",
+                }
+                if until == "user"
+                else {},
+            )
             with pytest.raises(ValueError):
                 await service.change('resume')
             waiting = await service.current()
             await service.change('activate', waiting.id, version=waiting.version,
                                  reason='Actual user input', context=USER)
-        waiting = await wait_goal(service, until='tasks')
+        waiting = await service.change('wait', until='tasks')
         assert (await service.change('activate', waiting.id, version=waiting.version,
                                      reason='Main verified the task result')).status == 'active'
     finally:

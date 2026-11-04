@@ -652,7 +652,7 @@ class TestChildLifecycle:
                     "task",
                     access="inherit",
                     inherit_context=False,
-                    config={"label": "Goal", "instructions": "Work", "tools": []},
+                    config={"label": "Goal", "system_prompt": "Work", "tools": []},
                 )
                 for _ in range(20)
             ]

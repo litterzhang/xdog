@@ -143,7 +143,7 @@ def test_unvalidated_catalog_cannot_dispatch_a_callback_with_nonopaque_completio
 
 
 def test_argument_labels_render_unicode_and_duplicate_labels_select_actual_value_not_presentation():
-    from xdog.tui.utils import visible_width
+    from xdog.tui.utils import string_width
 
     class Theme:
         accent = inverse = bold = dim = border = staticmethod(lambda text: text)
@@ -161,7 +161,7 @@ def test_argument_labels_render_unicode_and_duplicate_labels_select_actual_value
     assert '🚀 发布候选 [release-1]' in text and '🚀 发布候选 [release-2]' in text
     editor.handle_input(KeyEvent('down'))
     for width in (5, 15, 30, 80):
-        assert all(visible_width(row) <= width for row in editor.render(width))
+        assert all(string_width(row) <= width for row in editor.render(width))
     editor.handle_input(KeyEvent('tab'))
     assert editor.get_text() == '/ext-test-run release-2' and not submitted
 

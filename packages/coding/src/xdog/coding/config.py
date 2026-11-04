@@ -150,22 +150,10 @@ def get_debug_log_path() -> Path:
     return get_state_dir() / "debug.log"
 
 
-# Legacy aliases for callers that referenced get_global_settings_path
-get_global_settings_path = get_settings_path
-
 
 def get_project_settings_path(project_dir: Path) -> Path:
     """Return path to a project-level settings JSON."""
     return get_project_dir(project_dir) / "settings.json"
-
-
-# ---------------------------------------------------------------------------
-# Home dir helper (kept for backward compat)
-# ---------------------------------------------------------------------------
-
-def get_home_dir() -> Path:
-    """Return the user's home directory."""
-    return Path.home()
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +176,7 @@ class PlatformInfo:
             os_name=platform.system(),
             os_version=platform.version(),
             python_version=platform.python_version(),
-            home_dir=str(get_home_dir()),
+            home_dir=str(Path.home()),
             shell=os.environ.get("SHELL", "/bin/bash"),
         )
 
@@ -208,7 +196,7 @@ class GlobalConfig(BaseModel):
         return validate_max_messages_per_turn(value)
 
     default_model: str = ""
-    thinking_level: str = "normal"
+    thinking_level: str = "medium"
     permission_mode: str = "ask"
     extensions: list[str] = Field(default_factory=list)
     extension_dir: str = ""

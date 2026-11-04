@@ -18,7 +18,7 @@ from xdog.tui.transcript_transfer import (
     prepare_transfer,
     write_snapshot,
 )
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 RECORDS = (TranscriptRecord("u", "user", "input", "password=secret-value <script>bad()</script>"),
            TranscriptRecord("a", "assistant", "answer", "exact response\n" + "x" * 30000 + "TAIL"),
@@ -115,7 +115,7 @@ def test_review_requires_visible_content_and_path_no_coalesced_paste_save(tmp_pa
         assert not saved
         panel.handle_input(KeyEvent("enter"))
         assert saved == [prepared.options.path]
-        assert all(visible_width(row) <= 120 for row in panel.render(120))
+        assert all(string_width(row) <= 120 for row in panel.render(120))
     finally:
         panel.close()
 
@@ -231,7 +231,7 @@ def test_small_export_review_pages_every_path_field_and_invalidates_proof_on_res
             time.sleep(0.003)
         assert panel._visible
         assert 'last.json' in ''.join(painted) and 'Review output' in painted[0]
-        assert all(visible_width(row) <= 36 for row in painted)
+        assert all(string_width(row) <= 36 for row in painted)
         panel.handle_input(KeyEvent('v'))
         assert panel._previewing
         panel.render(36)

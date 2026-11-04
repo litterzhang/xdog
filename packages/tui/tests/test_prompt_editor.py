@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from xdog.tui.components.prompt_editor import PromptEditor
+from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.keys import KeyEvent
 from xdog.tui.utils import strip_ansi
 
@@ -15,8 +15,8 @@ class PlainTheme:
     border = staticmethod(lambda value: value)
 
 
-def make_editor(**kwargs: object) -> PromptEditor:
-    return PromptEditor(PlainTheme(), **kwargs)  # type: ignore[arg-type]
+def make_editor(**kwargs: object) -> InputPanel:
+    return InputPanel(PlainTheme(), **kwargs)  # type: ignore[arg-type]
 
 
 def test_text_callbacks_focus_and_history_contract() -> None:
@@ -171,7 +171,7 @@ class CommandColors(PlainTheme):
 
 
 def test_typed_registered_command_is_highlighted_but_not_its_arguments() -> None:
-    editor = PromptEditor(CommandColors(), command_provider=lambda: {'goal': 'Manage goal', '/help': 'Help'})
+    editor = InputPanel(CommandColors(), command_provider=lambda: {'goal': 'Manage goal', '/help': 'Help'})
     editor.set_autocomplete_visible(False)
     editor.set_text('/goal status /help')
     rows = editor.render(80)
@@ -192,10 +192,10 @@ def test_command_styling_preserves_wrapping_graphemes_tabs_and_hardware_cursor()
 
     from xdog.tui.components.input_panel import _with_cursor
     from xdog.tui.editor_layout import layout_editor
-    from xdog.tui.utils import visible_width
+    from xdog.tui.utils import string_width
 
     text = '/测试👩‍💻\targ\nnext'
-    editor = PromptEditor(CommandColors(), command_provider=lambda: {'测试👩‍💻': 'Command'})
+    editor = InputPanel(CommandColors(), command_provider=lambda: {'测试👩‍💻': 'Command'})
     editor.set_render_budget(30, show_borders=False)
     editor.set_autocomplete_visible(False)
     editor.set_text(text)
@@ -215,7 +215,7 @@ def test_command_styling_preserves_wrapping_graphemes_tabs_and_hardware_cursor()
                     _with_cursor(row.text, cursor_column, focused) if index == cursor_row else row.text)
                     for index, row in enumerate(layout.rows)]
                 assert unstyled == expected
-                assert all(visible_width(row) <= width for row in actual)
+                assert all(string_width(row) <= width for row in actual)
     editor.focused = False
     rows = editor.render(5)
     assert any('\x1b[33m' in row[2:] for row in rows[1:])  # Wrapped command stays highlighted.
@@ -229,7 +229,7 @@ def test_highlight_rendering_does_not_query_command_provider_or_change_submit() 
         calls.append(True)
         return {'goal': 'Goal'}
 
-    editor = PromptEditor(CommandColors(), command_provider=commands)
+    editor = InputPanel(CommandColors(), command_provider=commands)
     editor.set_text('/goal status')
     before = len(calls)
     for _ in range(10):
@@ -247,7 +247,7 @@ def test_highlight_rendering_does_not_query_command_provider_or_change_submit() 
 
 def test_newly_registered_exact_command_invalidates_highlighting_without_suggestions() -> None:
     commands = {}
-    editor = PromptEditor(CommandColors(), command_provider=lambda: commands)
+    editor = InputPanel(CommandColors(), command_provider=lambda: commands)
     editor.set_text('/new')
     assert not editor.autocomplete_active
     commands['new'] = 'New command'

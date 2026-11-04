@@ -9,7 +9,7 @@ from xdog.tui.child_drafts import ChildDraft
 from xdog.tui.components.child_draft_panel import DraftEntry
 from xdog.tui.components.parent_draft_panel import ParentDraftPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 
 def make(mode='restore', *, images=False, count=2):
@@ -75,7 +75,7 @@ def test_review_requires_physical_paint_no_repeat_release_paste_or_small_view_au
     assert not acts
     for width, budget in ((1, 8), (24, 0), (23, 8)):
         panel.set_render_budget(budget)
-        assert all(visible_width(row) <= width for row in panel.render(width))
+        assert all(string_width(row) <= width for row in panel.render(width))
         panel.handle_input(KeyEvent('enter'))
         assert not acts
     panel.set_render_budget(8)

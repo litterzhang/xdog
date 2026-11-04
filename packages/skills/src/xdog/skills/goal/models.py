@@ -74,9 +74,7 @@ class Goal:
         if self.status not in GOAL_STATES:
             raise ValueError('Invalid Goal status')
         number(self.version)
-        # 'host' is decode-only historical v2 data. Service/tools and store
-        # admission reject new host waits; decoding never activates old work.
-        if self.wait_for not in {'', 'user', 'tasks', 'host'}:
+        if self.wait_for not in {'', 'user', 'tasks'}:
             raise ValueError('Invalid Goal wait condition')
         if self.status != 'waiting' and self.wait_for:
             raise ValueError('Only a waiting Goal has a wait condition')

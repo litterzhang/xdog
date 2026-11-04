@@ -14,14 +14,19 @@ import sys
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from xdog.agent import ToolRepo
 from xdog.agent.core import StreamFn, WebSearchFn
 from xdog.agent.workspace import script_bound
-from xdog.flow.checkpoint import CheckpointInterceptor, CheckpointStore
+from xdog.flow.checkpoint import (
+    CheckpointInterceptor,
+    CheckpointStore,
+    checkpoint_contract,
+    validate_checkpoint_contract,
+)
 from xdog.flow.coerce import to_python, to_state
 from xdog.flow.conditions import evaluate
 from xdog.flow.errors import WorkflowBudgetExceeded, WorkflowExecutionError, WorkflowPaused
@@ -433,12 +438,14 @@ async def execute(
     # Checkpoint restore — only when both checkpoint store and run_id given.
     # -----------------------------------------------------------------------
     _ckpt_active = checkpoint is not None and run_id is not None
+    contract = checkpoint_contract(asdict(wf)) if _ckpt_active else {}
 
     if _ckpt_active:
         assert checkpoint is not None and run_id is not None  # narrow types
         snap = checkpoint.load(run_id)
         if snap is not None:
             expected_keys = {
+                "contract",
                 "outputs",
                 "completed",
                 "loop_counters",
@@ -447,12 +454,17 @@ async def execute(
                 "memo",
                 "tokens_used",
             }
-            # `sessions` is optional so a checkpoint written before `inherit`
-            # existed still resumes — it simply carries no sessions, which is
-            # the same state a run has before any agent node has spoken.
-            if set(snap) - {"sessions"} != expected_keys:
+            if set(snap) != expected_keys | {"sessions"}:
                 raise WorkflowExecutionError("checkpoint does not match the current schema")
-            if "sessions" in snap and not isinstance(snap["sessions"], dict):
+            if not isinstance(snap["outputs"], dict):
+                raise WorkflowExecutionError("checkpoint outputs must be a mapping")
+            if inputs is not None and snap['outputs'].get(IN_NODE_ID) != seed:
+                raise WorkflowExecutionError('Checkpoint inputs changed; no old work was resumed')
+            try:
+                validate_checkpoint_contract(snap, contract)
+            except ValueError as exc:
+                raise WorkflowExecutionError(str(exc)) from None
+            if not isinstance(snap["sessions"], dict):
                 raise WorkflowExecutionError("checkpoint sessions must be a mapping")
             if not isinstance(snap["outputs"], dict) or not isinstance(snap["completed"], list):
                 raise WorkflowExecutionError("checkpoint outputs/completed have invalid types")
@@ -466,7 +478,7 @@ async def execute(
             outputs = {str(k): dict(v) for k, v in snap["outputs"].items() if isinstance(v, dict)}
             sessions = {
                 str(k): dict(v)
-                for k, v in (snap.get("sessions") or {}).items()
+                for k, v in snap["sessions"].items()
                 if isinstance(v, dict)
             }
             completed = {str(node_id) for node_id in snap["completed"]}
@@ -505,6 +517,7 @@ async def execute(
         context and produce a plausible, wrong answer rather than an error.
         """
         return {
+            "contract": contract,
             "outputs": outputs,
             "sessions": sessions,
             "completed": list(completed),

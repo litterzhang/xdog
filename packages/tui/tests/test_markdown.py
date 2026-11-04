@@ -47,12 +47,12 @@ def test_inline_paragraphs_and_streaming_updates_keep_natural_layout():
 
 
 def test_inline_lists_wrap_with_unicode_width_and_preserve_styles():
-    from xdog.tui.utils import strip_ansi, visible_width
+    from xdog.tui.utils import string_width, strip_ansi
 
     md = Markdown("- 中文 **强调** `code` tail", 0, 0)
     for width in (4, 10, 20, 80):
         rows = md.render(width)
-        assert all(visible_width(row) <= width for row in rows)
+        assert all(string_width(row) <= width for row in rows)
         assert all("\n" not in row for row in rows)
         joined = "".join(strip_ansi(row).replace(" ", "") for row in rows)
         assert joined == "-中文强调codetail"

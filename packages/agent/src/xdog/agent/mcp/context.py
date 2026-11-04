@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from xdog.agent.mcp.completion import bounded, request_arguments, template_arguments
@@ -29,11 +29,11 @@ class McpBlock:
     mime_type: str = ""
     data: str = ""
     uri: str = ""
-    content_type: str = ""  # Empty only for legacy documents with no discriminator.
+    content_type: str = field(kw_only=True)
 
     def __post_init__(self) -> None:
         if (not isinstance(self.content_type, str) or self.content_type not in (
-                "", "text", "image", "audio", "resource_text", "resource_blob", "resource_link")
+                "text", "image", "audio", "resource_text", "resource_blob", "resource_link")
                 or any(not isinstance(value, str) for value in (
                     self.role, self.text, self.mime_type, self.data, self.uri))):
             raise ValueError("Invalid MCP document block type/fields")
@@ -42,7 +42,7 @@ class McpBlock:
 
     @property
     def is_binary(self) -> bool:
-        return self.content_type in ("image", "audio", "resource_blob") or bool(self.data)
+        return self.content_type in ("image", "audio", "resource_blob")
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +114,8 @@ def prompt_blocks(messages: object) -> tuple[McpBlock, ...]:
             embedded = resource_blocks([content.get("resource")], role=message["role"])
             extra = _metadata_text(content, {"type", "resource"})
             blocks.extend(McpBlock(block.role, block.text + ("\n" + extra if extra else ""),
-                                   block.mime_type, block.data, block.uri, block.content_type) for block in embedded)
+                                   block.mime_type, block.data, block.uri, content_type=block.content_type)
+                          for block in embedded)
         elif kind == "resource_link":
             blocks.append(resource_link_block(content, role=message["role"]))
         elif kind in {"image", "audio"} and isinstance(content.get("data"), str):

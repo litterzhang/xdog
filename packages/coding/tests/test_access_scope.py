@@ -37,7 +37,7 @@ def create(tmp_path, mode="ask"):
                                        tools=get_default_tools(tmp_path), tool_ctx={"fs_workspace": str(tmp_path)}),
                            session_data=store.create_session(model="test/model", working_dir=tmp_path),
                            session_manager=store, settings=SettingsManager(global_path=tmp_path / "settings.json"),
-                           tool_repo=None, bash=None, working_dir=tmp_path, permissions=PermissionManager(mode))
+                           tool_repo=None, working_dir=tmp_path, permissions=PermissionManager(mode))
     return session, turns
 
 
@@ -70,31 +70,26 @@ async def test_host_read_only_blocks_actual_writes_and_explicit_release_keeps_po
         session.dispose()
 
 
-async def test_legacy_planning_restore_retains_material_and_restricts_until_explicit_user_release(tmp_path):
+async def test_old_planning_session_is_rejected_without_releasing_current_access(tmp_path):
     import json
     session, _ = create(tmp_path, 'allow-all')
-    legacy = {'mode': 'planning', 'revision': 2, 'objective': 'Inspect only', 'steps': [
-        {'description': 'Read files', 'status': 'pending'}]}
     try:
+        session.access_control(True)
         target = session.session_manager.create_session(model='test/model', working_dir=tmp_path)
         path = session.session_manager._session_path(target.session_id)
-        assert path.exists()
         raw = json.loads(path.read_text())
         raw.pop('access')
-        raw['plan'] = legacy
+        raw['plan'] = {'mode': 'off', 'revision': 0}
         path.write_text(json.dumps(raw))
-        assert session.switch_session(target.session_id)
-        assert session.access.state.read_only
-        assert session.session_data.legacy_plan == legacy
-        await session.send_message('write')
+        before = session.session_id
+        from xdog.coding.core.session_manager import SessionUnavailable
+        with pytest.raises(SessionUnavailable):
+            session.switch_session(target.session_id)
+        assert session.session_id == before and session.access.state.read_only
         assert not (tmp_path / 'target').exists()
-        await asyncio.to_thread(session.access_control, False)
-        loaded = session.session_manager.load_session(target.session_id)
-        assert not loaded.access['read_only'] and loaded.legacy_plan == legacy
-        await session.send_message('write')
-        assert (tmp_path / 'target').exists()
     finally:
         session.dispose()
+
 
 
 def test_invalid_saved_scope_cannot_drop_current_read_only_state(tmp_path):
@@ -144,7 +139,7 @@ def test_saved_read_only_gate_restores_in_fresh_python_without_model_or_replay(t
         session = AgentSession(agent=Agent(no_model, config=AgentConfig(model='test/model'),
             tools=get_default_tools(root)), session_data=data, session_manager=store,
             settings=SettingsManager(global_path=root / 'settings.json'), tool_repo=None,
-            bash=None, working_dir=root, permissions=PermissionManager('allow-all'))
+            working_dir=root, permissions=PermissionManager('allow-all'))
         try:
             args = {'action':'write', 'path':'target', 'content':'bad'}
             call = ToolCall(id='never-replay', name='filesystem', arguments=args)

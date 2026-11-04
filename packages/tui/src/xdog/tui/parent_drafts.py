@@ -54,11 +54,9 @@ class ParentDrafts:
             self.notice('Parent draft autosave ' + ('ON' if self.autosave.enabled else 'OFF')
                         + ' · PRIVATE PLAINTEXT · pending/writing edits are not acknowledged durable; '
                         'committed is a polled disk receipt, not per-key saving · /draft restore reviews recovery')
-        elif command in {'restore', 'saved'}:
+        elif command == 'restore':
             if self.io.busy:
                 raise ValueError('Parent draft disk work still settling')
-            # Legacy "saved list" is the same bounded explicit selector, not a directory catalog.
-            value = '' if value == 'list' else value
             if value and (len(value) != 32 or any(c not in '0123456789abcdef' for c in value)):
                 raise ValueError('Usage: /draft restore [SNAPSHOT_ID]')
             self.invalidate_read()
@@ -145,7 +143,16 @@ class ParentDrafts:
         # The shared codec permits 64 KiB for parent inputs; former execution
         # settings are not persisted or restored as policy.
         row = DraftEntry(self.context(), ('parent', ''), current, current, self.context(), True)
-        return self.autosave.poll(ChildDraftStore(self.root(), create_parent=self.create_parent), (row,),
-                                  lambda text: self.notice(text.replace('child autosave', 'parent autosave')
-                                                          .replace('/agents saved', '/draft saved')),
-                                  flush=flush) or changed
+        return (
+            self.autosave.poll(
+                ChildDraftStore(self.root(), create_parent=self.create_parent),
+                (row,),
+                lambda text: self.notice(
+                    text.replace("child autosave", "parent autosave")
+                    .replace("/agents saved list", "/draft restore")
+                    .replace("/agents saved", "/draft restore")
+                ),
+                flush=flush,
+            )
+            or changed
+        )

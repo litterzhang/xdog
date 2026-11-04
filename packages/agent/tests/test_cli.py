@@ -11,8 +11,12 @@ def test_none_returns_empty_dict():
 
 
 def test_parses_json_object():
-    ctx = _parse_tool_ctx('{"result_schema": {"summary": "string"}}')
-    assert ctx == {"result_schema": {"summary": "string"}}
+    ctx = _parse_tool_ctx(
+        '{"result_schema": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}}'
+    )
+    assert ctx == {
+        "result_schema": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
+    }
 
 
 def test_reads_from_file_with_at_prefix(tmp_path):
@@ -42,14 +46,29 @@ async def test_cli_context_roundtrip_uses_generic_schema_and_shared_sink(tmp_pat
     from xdog.agent.tools import create_submit_result_tool
 
     path = tmp_path / "ctx.json"
-    path.write_text(json.dumps({"result_schema": {"summary": "string"}, "result_sink": {}}), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "result_schema": {
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                },
+                "result_sink": {},
+            }
+        ),
+        encoding="utf-8",
+    )
     ctx = _parse_tool_ctx(f"@{path}")
     await create_submit_result_tool().execute("submit", {"result": {"summary": "done"}}, ctx=ctx)
     _print_tool_ctx(ctx, verbose=False)
     captured = capsys.readouterr()
     assert captured.out == ""
     printed = json.loads(captured.err[captured.err.index("{"):])
-    assert printed == {"result_schema": {"summary": "string"}, "result_sink": {"result": {"summary": "done"}}}
+    assert printed == {
+        "result_schema": {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]},
+        "result_sink": {"result": {"summary": "done"}},
+    }
 
 
 def test_chat_help_uses_generic_result_context(monkeypatch, capsys):
@@ -63,3 +82,12 @@ def test_chat_help_uses_generic_result_context(monkeypatch, capsys):
     assert '"result_schema"' in help_text
     assert "flow_output_schema" not in help_text
     assert "flow_result_sink" not in help_text
+    import json
+    import re
+
+    example = re.search(r"Example:\s+--tool-ctx\s+'(.*?)'", help_text, flags=re.DOTALL)
+    assert example is not None
+    context = json.loads(" ".join(example.group(1).split()))
+    assert context['result_schema'] == {
+        'type': 'object', 'properties': {'summary': {'type': 'string'}}, 'required': ['summary'],
+    }

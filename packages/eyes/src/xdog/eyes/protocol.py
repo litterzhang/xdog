@@ -1,7 +1,7 @@
 """Explicit live implementation negotiation, independent of wire frame version."""
 from __future__ import annotations
 
-from xdog.eyes.local_control import JsonValue
+from xdog.eyes.local_control import CONTROL_VERSION, JsonValue
 
 FEATURES = ('owner-registrations', 'durable-events', 'async-activation')
 SUPPORTED_FEATURES = (*FEATURES, 'remote-sources-v1', 'content-sources-v1',
@@ -40,7 +40,7 @@ def source_features(definition: JsonValue) -> set[str]:
 
 def hello() -> dict[str, JsonValue]:
     return {'runtime_type': 'eyes-daemon',
-            'control_protocol': 1, 'feature_version': 1,
+            'control_protocol': CONTROL_VERSION, 'feature_version': 1,
             'features': list(SUPPORTED_FEATURES)}
 
 

@@ -89,6 +89,8 @@ members = [
 ]
 
 [tool.uv.sources]
+# Local development fork; publish/pin an accessible fork before distributing this dependency.
+xiaohongshu-cli = { path = "../xiaohongshu-cli", editable = true }
 xdog-ai = { workspace = true }
 xdog-agent = { workspace = true }
 xdog-flow = { workspace = true }
@@ -161,5 +163,5 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["openai", "sentence_transformers", "sqlite_vec", "rank_bm25", "qrcode", "croniter", "xdog.agent", "xdog.agent.*", "xdog.ai", "xdog.ai.*", "xdog.flow", "xdog.flow.*", "flask", "flask.*", "markupsafe", "markupsafe.*", "markdown", "markdown.*", "frontmatter", "frontmatter.*", "fastjsonschema", "jsonpath_ng", "jsonpath_ng.*"]
+module = ["openai", "sentence_transformers", "sqlite_vec", "rank_bm25", "qrcode", "croniter", "xdog.agent", "xdog.agent.*", "xdog.ai", "xdog.ai.*", "xdog.flow", "xdog.flow.*", "flask", "flask.*", "markupsafe", "markupsafe.*", "markdown", "frontmatter", "frontmatter.*", "jsonpath_ng"]
 ignore_missing_imports = true

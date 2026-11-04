@@ -40,7 +40,7 @@ async def test_actual_coding_navigation_stages_target_entries_and_preserves_orig
                                        skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"),
                                        config=AgentConfig(model='opaque/original')),
         session_data=manager.create_session(model='opaque/original', working_dir=tmp_path), session_manager=manager,
-        settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_repo=None, bash=None,
+        settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_repo=None,
         permissions=PermissionManager('deny'))
     ui = InteractiveMode(session)
     target_entries = entries(allow=scenario not in {'missing', 'failure'}, fail=scenario == 'failure',

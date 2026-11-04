@@ -8,9 +8,11 @@ for immutability and ``Literal`` types for discriminated unions.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Literal, Union
+
+from xdog.ai.failures import ModelFailure
 
 # ---------------------------------------------------------------------------
 # API & Provider literals
@@ -159,6 +161,7 @@ class AssistantMessage:
     usage: Usage = field(default_factory=Usage)
     stop_reason: StopReason = "stop"
     error_message: str | None = None
+    failure: ModelFailure | None = None
     timestamp: float = 0.0  # seconds since epoch (time.time())
 
 
@@ -326,14 +329,14 @@ class Model:
     compat: OpenAICompletionsCompat | None = None
     supported_protocols: tuple[str, ...] | None = None
     # Exact native generation protocols advertised by provider endpoints.
-    # None marks legacy/manual metadata; an empty tuple explicitly means none.
+    # None is unreported; no generation endpoint is inferred from other fields.
     supported_generation_protocols: tuple[str, ...] | None = None
     preferred_protocol: str | None = None
     # Capability flags from the provider API
-    supports_tool_calls: bool = True
-    supports_parallel_tool_calls: bool = False
-    supports_streaming: bool = True
-    supports_structured_outputs: bool = False
+    supports_tool_calls: bool | None = None
+    supports_parallel_tool_calls: bool | None = None
+    supports_streaming: bool | None = None
+    supports_structured_outputs: bool | None = None
     # Thinking budget range (from API, not hardcoded)
     thinking_budget_range: ThinkingBudgetRange | None = None
     # Adaptive thinking: True = use type:adaptive + output_config.effort
@@ -636,6 +639,12 @@ class ErrorEvent:
     error: str = ""
     stop_reason: StopReason = "error"
     message: AssistantMessage | None = None
+    failure: ModelFailure = field(default_factory=ModelFailure)
+
+    def __post_init__(self) -> None:
+        if self.message is not None and self.message.failure != self.failure:
+            object.__setattr__(self, 'message', replace(self.message, failure=self.failure))
+
 
 
 AssistantMessageEvent = Union[

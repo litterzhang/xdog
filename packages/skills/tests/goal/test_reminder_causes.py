@@ -4,7 +4,6 @@ import asyncio
 import pytest
 from xdog.skills.goal.codec import read_json
 
-from packages.skills.tests.goal.legacy import wait_goal
 from packages.skills.tests.goal.test_reminder_coalescing import receipt_facts
 from packages.skills.tests.goal.test_runtime import close, setup
 from packages.skills.tests.goal.test_service import USER
@@ -179,7 +178,7 @@ async def test_legacy_accepted_payload_and_digest_stay_immutable_when_delta_is_r
         await close(runtime, parent)
 
 
-@pytest.mark.parametrize('boundary', ['user', 'host', 'paused'])
+@pytest.mark.parametrize('boundary', ['user', 'paused'])
 async def test_new_epoch_keeps_scheduling_through_but_body_delta_uses_all_accepted(tmp_path, monkeypatch, boundary):
     from packages.skills.tests.goal.test_questions import QUESTION
 
@@ -206,7 +205,7 @@ async def test_new_epoch_keeps_scheduling_through_but_body_delta_uses_all_accept
             await runtime.service.plan('Post-resume context')
             active = await runtime.service.plan('Current plan')
         else:
-            await wait_goal(runtime.service, until=boundary, **(QUESTION if boundary == 'user' else {}))
+            await runtime.service.change('wait', until=boundary, **QUESTION if boundary == 'user' else {})
             await runtime.service.plan('Waiting context')
             waiting = await runtime.service.plan('Ready to inspect recovery')
             active = await runtime.service.change('activate', goal.id, version=waiting.version,

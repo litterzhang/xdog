@@ -327,7 +327,6 @@ class InteractiveMode:
                                           lambda: self._tui.request_render())
 
         self._chat_log.set_details_expanded(False)
-        self._status_container = Container()
         self._footer = FooterComponent(self._theme)
         self._keymap = PromptKeymap.load(get_config_dir() / "keybindings.json")
         self._editor = CustomEditorComponent(self._theme)
@@ -366,10 +365,6 @@ class InteractiveMode:
         self._details_panel = DetailsPanel(self._chat_log.detail_records, max_rows=8)
         self._banner_added = False
 
-        # Compatibility handles retained for callers/tests; activity and metadata
-        # now occupy one stable footer row.
-        self._status_text: Text | None = None
-        self._status_loader = None
         self._hints = CompactText("", 0, 0, style=self._theme.dim)
         self._layout = InlineLayout(
             transcript=self._chat_log,
@@ -384,7 +379,7 @@ class InteractiveMode:
         )
         self._tui.add_child(self._layout)
         self._tui.set_focus(self._editor)
-        self._editor.set_focus(True)
+        self._editor.focused = True
         self._update_hints()
         self._tui.add_input_listener(self._handle_global_input)
 
@@ -1705,7 +1700,7 @@ class InteractiveMode:
         self._details_open = True
         self._details_panel.show_latest(from_start=True)
         self._layout.details = self._details_panel
-        self._editor.set_focus(False)
+        self._editor.focused = False
         self._tui.set_focus(self._details_panel)
         self._hints.set_text("Details focused · ←/→ entry · PgUp/PgDn scroll · End latest · Esc input")
         self._tui.request_render()
@@ -1715,7 +1710,7 @@ class InteractiveMode:
         self._layout.details = None
         self._update_hints()
         self._tui.set_focus(self._editor)
-        self._editor.set_focus(True)
+        self._editor.focused = True
         self._tui.request_render()
 
     def run(self) -> None:
@@ -2986,7 +2981,7 @@ class InteractiveMode:
         self._permission_prompt = prompt
         self._permission_container.add_child(prompt)
         self._layout.permission = prompt
-        self._editor.set_focus(False)
+        self._editor.focused = False
         self._tui.set_focus(prompt)
         if owner is None or self._is_busy:
             self._run_status = self._run_status.advance(RunPhase.PERMISSION)

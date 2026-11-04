@@ -25,10 +25,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 import httpx
+from xdog.ai.capabilities import validate_model_request
 from xdog.ai.core import AuthResult, BaseProtocol
+from xdog.ai.failures import ModelCapabilityError, model_failure
 from xdog.ai.native import NativeEventStream, NativeResponse, ProtocolRequest
 from xdog.ai.protocols._message_builder import MessageBuilder
 from xdog.ai.protocols._transform_messages import context_to_openai
@@ -258,6 +261,9 @@ def stream(
     - ``response_id`` is extracted from the first chunk.
     - Reasoning/thinking content is extracted from multiple provider fields.
     """
+    validate_model_request(model, context, options)
+    if model.supports_streaming is False:
+        raise ModelCapabilityError("streaming")
     compat = _get_compat(model)
     reasoning_level = options.thinking
     temperature = options.temperature
@@ -537,12 +543,13 @@ def stream(
                 raise
             output.stop_reason = "error"
             output.error_message = str(exc)
-            error_snapshot = output.snapshot()
+            error_snapshot = replace(output.snapshot(), failure=model_failure(exc, partial=started))
 
             yield ErrorEvent(
                 error=str(exc),
                 stop_reason=output.stop_reason,
                 message=error_snapshot,
+                failure=model_failure(exc, partial=started),
             )
 
             if not result_future.done():

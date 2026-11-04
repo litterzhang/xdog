@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from xdog.agent import AgentMessage
 from xdog.agent.agent import Agent
 from xdog.agent.compaction import (
@@ -11,7 +9,6 @@ from xdog.agent.compaction import (
 )
 from xdog.agent.compaction import (
     conversation_text,
-    extract_text,
     summary_context,
 )
 from xdog.ai.types import UserMessage
@@ -73,9 +70,6 @@ async def compact_messages(
     return [summary_msg] + recent_messages
 
 
-def _extract_text(msg: Any) -> str:
-    """Compatibility wrapper for the shared text projection."""
-    return extract_text(msg)
 
 
 async def _summarize(conversation_text: str, agent: Agent, instructions: str = "") -> str:

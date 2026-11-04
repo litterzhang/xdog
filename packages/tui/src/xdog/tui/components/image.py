@@ -126,7 +126,3 @@ class Image(Component):
         self._cached_lines = [self._theme.fallback_color(fallback)]
         self._cached_width = width
         return self._cached_lines
-
-
-# Backward compatibility
-ImageComponent = Image

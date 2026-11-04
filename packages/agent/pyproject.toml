@@ -23,7 +23,6 @@ license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "LICENSE-EXCEPTION.md"]
 dependencies = [
     "xdog-ai>=2.5.0",
-    "fastjsonschema",
     # Skill frontmatter is YAML; see xdog.agent.skills.repo for why it is
     # parsed rather than approximated.
     "pyyaml>=6.0",
@@ -43,10 +42,6 @@ Issues = "https://github.com/litterzhang/xdog/issues"
 
 [project.scripts]
 xdog-agent = "xdog.agent.cli:main"
-
-[[tool.mypy.overrides]]
-module = ["fastjsonschema"]
-ignore_missing_imports = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/xdog"]

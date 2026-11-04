@@ -158,31 +158,18 @@ async def test_new_host_wait_is_rejected_without_changing_current_goal(tmp_path)
         assert runtime._active_session is None and not model.calls
 
 
-async def test_historical_host_wait_restores_without_automatic_release_or_new_host_wait_support(tmp_path):
-    # Seed only historical test data; never use the production lifecycle API to
-    # claim that a new host wait is admitted. The fixture preserves old records.
-    from packages.skills.tests.goal.legacy import wait_goal
-
-    async with application(tmp_path) as (_, runtime, _):
+async def test_host_wait_is_rejected_without_goal_mutation_or_model_calls(tmp_path):
+    async with application(tmp_path) as (_, runtime, model):
         host = runtime.capabilities.get('goal')
         goal = await planned(host)
-        historical = await wait_goal(host.service, goal.id, until='host', reason='Historical host fault')
-        original_history = await host.service.store.history(goal.id)
-    async with application(tmp_path) as (app, runtime, model):
-        host = runtime.capabilities.get('goal')
-        assert await host.service.current() == historical
-        assert (await host.service.status(goal.id))['current']['wait_for'] == 'host'
-        scope = InputScope('main', runtime.workspace_dir)
-        inputs = await app.input_service()
-        inputs.publish_available(scope)
-        await host.flush()
-        assert not await inputs.store.records(scope)
-        assert host._observer is None and runtime._active_session is None and not model.calls
-        with pytest.raises(ValueError, match='actual user operation'):
-            await host.service.change('activate', goal.id, version=historical.version,
-                                      reason='Automatic availability does not release a historical wait')
-        assert await host.service.current() == historical
-        assert await host.service.store.history(goal.id) == original_history
+        goal = await host.service.current()
+        before = await host.service.store.history(goal.id)
+        with pytest.raises(ValueError, match='only user or tasks'):
+            await host.service.change('wait', goal.id, until='host', reason='No host wait')
+        assert await host.service.current() == goal
+        assert await host.service.store.history(goal.id) == before
+        assert runtime._active_session is None and not model.calls
+
 
 
 async def test_forged_child_role_label_never_inherits_parent_goal_tool_or_filesystem_authority(tmp_path):
@@ -264,7 +251,7 @@ async def test_legacy_data_is_retained_unchanged_and_never_runs_old_work(tmp_pat
         assert old.read_bytes() == raw and runtime.capabilities.get('goal') is None
     async with application(tmp_path) as (app, runtime, model):
         host = runtime.capabilities.get('goal')
-        assert await host.service.current() is None and str(old) in host._legacy_paths
+        assert await host.service.current() is None and not hasattr(host, '_legacy_paths')
         assert old.read_bytes() == raw and not model.calls and runtime._active_session is None
         assert host.service.store.path.name == 'registry.sqlite3'
 

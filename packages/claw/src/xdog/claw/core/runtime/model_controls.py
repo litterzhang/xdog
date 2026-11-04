@@ -98,7 +98,7 @@ async def extension_models(runtime: GroupRuntime, expected_session: str, selecte
         resolved = await run_owned(stream.resolve_model, selected) if isinstance(stream, ModelStreamFn) else None
         if not owner_current() or session.agent.state.is_streaming:
             raise ValueError("Model selection owner changed during metadata read")
-        if (resolved is None or resolved.model_type != "chat" or not resolved.supports_streaming
+        if (resolved is None or resolved.model_type != "chat" or resolved.supports_streaming is False
                 or resolved.context_window <= 0):
             raise ValueError("Model is not an available streaming chat model on configured adapter; no fallback")
         model = resolved

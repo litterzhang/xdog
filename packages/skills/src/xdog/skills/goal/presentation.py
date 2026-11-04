@@ -116,8 +116,6 @@ def _next(value: Any, goal: dict[str, Any]) -> list[str]:
     # An inconsistent/stale next hint must not obscure a recorded human wait.
     if goal.get('status') == 'waiting' and goal.get('wait_for') == 'user':
         return ['Next: waiting for user input; no automatic retry.']
-    if goal.get('status') == 'waiting' and goal.get('wait_for') == 'host':
-        return ['Next: waiting for actual host recovery; no automatic retry.']
     if not isinstance(value, dict):
         return [f'Next: {_text(value)}'] if value else []
     if goal.get('status') == 'completed' and value.get('action') == 'create':
@@ -156,11 +154,6 @@ def _metadata(facts: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _legacy(facts: dict[str, Any]) -> list[str]:
-    legacy = facts.get('legacy_storage')
-    if isinstance(legacy, (list, tuple)) and legacy:
-        return [f'Legacy storage: {len(legacy)} retained unchanged (paths omitted).']
-    return []
 
 
 def format_status(facts: dict[str, Any]) -> str:
@@ -168,7 +161,7 @@ def format_status(facts: dict[str, Any]) -> str:
     goal = _mapping(facts.get('current'))
     if not goal:
         return '\n'.join(['No current Goal. Create with /goal create <outcome> or view /goal history.',
-                          *_transition(facts, goal), *_legacy(facts), _DETAILS])
+                          *_transition(facts, goal), _DETAILS])
     lines = [_heading(goal), *_state(goal), *_question_delivery(facts), *_transition(facts, goal)]
     counts = _mapping(facts.get('task_counts'))
     lines.append(f"Tasks: {_count(counts.get('completed'))}/{_count(facts.get('task_count'))} completed"
@@ -196,7 +189,7 @@ def format_status(facts: dict[str, Any]) -> str:
     lines.extend(_metadata(facts))
     if facts.get('workspace'):
         lines.append(f"Workspace: {_text(facts['workspace'])}")
-    return '\n'.join([*lines, *_legacy(facts), _DETAILS])
+    return '\n'.join([*lines, _DETAILS])
 
 
 def format_history(facts: dict[str, Any]) -> str:
@@ -215,7 +208,7 @@ def format_history(facts: dict[str, Any]) -> str:
     offset = facts.get('next_offset')
     if type(offset) is int and offset >= 0:
         lines.append(f'Next page (16 per page): /goal history {offset}')
-    return '\n'.join([*lines, *_legacy(facts), 'Full history data: /goal history --json (… = omitted/truncated)'])
+    return '\n'.join([*lines, 'Full history data: /goal history --json (… = omitted/truncated)'])
 
 
 def format_change(action: str, facts: dict[str, Any]) -> str:

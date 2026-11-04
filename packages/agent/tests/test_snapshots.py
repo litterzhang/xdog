@@ -19,7 +19,6 @@ from xdog.agent.snapshots import (
     InterruptedTool,
     Snapshot,
     capture_skill_snapshots,
-    decode_legacy_snapshot,
     decode_snapshot,
     encode_snapshot,
     skill_snapshot,
@@ -425,39 +424,11 @@ def test_code_looking_data_stays_inert(monkeypatch: pytest.MonkeyPatch, tmp_path
     import_module.assert_not_called()
 
 
-def test_legacy_is_an_explicit_partial_route() -> None:
-
-    def _check_case(patch: "Any") -> "None":
-        assert decode_legacy_snapshot(patch).values == patch
-        with pytest.raises(ValueError):
-            decode_snapshot(patch)
-
-    for patch in [
-        {},
-        {"temperature": 0.2},
-        {"messages": None},
-        {"messages": []},
-        {"model": None},
-        {"system_prompt": [{"text": "old prefix"}]},
-    ]:
-        _check_case(patch)
-
-
-def test_legacy_current_dump_shape_and_missing_fields_preserved() -> None:
-    state, _ = _sample()
-    legacy = {"messages": messages_to_dicts(list(state.messages)), "system_prompt": "old composed prefix",
-              "model": "model", "thinking": None, "temperature": 0.4, "max_tokens": None}
-    restored = decode_legacy_snapshot(legacy)
-    assert restored.values == legacy
-    legacy["messages"].clear()
-    assert restored.values["messages"]
-    assert "skills" not in restored.values
+@pytest.mark.parametrize('patch', [{}, {'temperature': .2}, {'messages': None}, {'messages': []},
+                                  {'model': None}, {'system_prompt': [{'text': 'old prefix'}]}])
+def test_unversioned_partial_snapshots_are_rejected(patch):
     with pytest.raises(ValueError):
-        decode_legacy_snapshot(_encoded())
-    with pytest.raises(ValueError):
-        decode_legacy_snapshot({"messages": [{"role": "user", "content": "ok"}, {"role": "bad"}]})
-    with pytest.raises(ValueError):
-        decode_legacy_snapshot({"messages": messages_to_dicts(list(state.messages[:4]))})
+        decode_snapshot(patch)
 
 
 # Each invocation below is a fresh interpreter. No mock provider or Agent is
@@ -506,21 +477,17 @@ def test_explicit_trusted_manager_rebinding_and_drift(tmp_path: Path) -> None:
     assert candidate.base_system_prompt == "Raw base"
 
 
-@pytest.mark.parametrize("prompt", [None, "raw", (SystemPromptBlock(text="raw", cache=True),)])
-def test_compatibility_aliases_mirror_canonical_data(prompt: Any) -> None:
-    options = StreamOptions(thinking="high", temperature=0.25, max_tokens=1024)
-    raw = encode_snapshot(AgentState(system_prompt="composed"), base_system_prompt=prompt, options=options)
-    assert raw["system_prompt"] == raw["base_system_prompt"]
-    assert raw["thinking"] == "high"
-    assert raw["temperature"] == 0.25
-    assert raw["max_tokens"] == 1024
+@pytest.mark.parametrize('prompt', [None, 'raw', (SystemPromptBlock(text='raw', cache=True),)])
+def test_snapshot_contains_only_canonical_prompt_and_option_fields(prompt):
+    options = StreamOptions(thinking='high', temperature=.25, max_tokens=1024)
+    raw = encode_snapshot(AgentState(system_prompt='composed'), base_system_prompt=prompt, options=options)
+    assert not {'system_prompt', 'thinking', 'temperature', 'max_tokens'} & raw.keys()
+    assert raw['options']['thinking'] == 'high'
     assert decode_snapshot(raw).options == options
-    for key in ("system_prompt", "thinking", "temperature", "max_tokens"):
-        del raw[key]
     assert decode_snapshot(raw).base_system_prompt == prompt
 
 
-def test_conflicting_or_malformed_aliases_rejected() -> None:
+def test_retired_snapshot_fields_rejected() -> None:
 
     def _check_case(key: "str", value: "Any") -> "None":
         raw = _encoded()
@@ -539,15 +506,11 @@ def test_conflicting_or_malformed_aliases_rejected() -> None:
         _check_case(key, value)
 
 
-def test_canonical_change_cannot_be_hidden_by_compatibility_alias() -> None:
+@pytest.mark.parametrize('key', ['system_prompt', 'thinking', 'temperature', 'max_tokens'])
+def test_even_matching_old_aliases_are_rejected(key):
     raw = _encoded()
-    raw["options"]["thinking"] = "low"
-    with pytest.raises(ValueError, match="alias conflicts"):
-        decode_snapshot(raw)
-    raw = _encoded()
-    raw["system_prompt"][0]["text"] = "changed alias"
-    assert raw["base_system_prompt"][0]["text"] == "Raw instructions"
-    with pytest.raises(ValueError, match="alias conflicts"):
+    raw[key] = raw['base_system_prompt'] if key == 'system_prompt' else raw['options'][key]
+    with pytest.raises(ValueError, match='unknown fields'):
         decode_snapshot(raw)
 
 
@@ -579,8 +542,6 @@ def test_unknown_custom_context_codecs_rejected_in_versioned_snapshots(kind: str
     raw["messages"] = messages_to_dicts([message])
     with pytest.raises(ValueError, match="unsupported custom context codec"):
         decode_snapshot(raw)
-    # Explicit legacy route keeps its documented host-converter responsibility.
-    assert decode_legacy_snapshot({"messages": raw["messages"]}).values["messages"] == raw["messages"]
 
 
 def test_active_interrupted_turn_skill_preserves_run_identity_and_binding() -> None:
@@ -642,3 +603,15 @@ def test_malformed_known_custom_records_fail_as_validation_errors(field: str, va
     message.data[field] = value
     with pytest.raises(ValueError, match="invalid custom context record"):
         encode_snapshot(AgentState(messages=(message,)), base_system_prompt="")
+
+
+def test_model_failure_facts_are_lossless_but_cannot_smuggle_authority():
+    from xdog.ai import ModelFailure
+
+    state, kwargs = _sample()
+    state.messages = (*state.messages, AssistantMessage(stop_reason='error', failure=ModelFailure('rate_limit', 429)))
+    raw = encode_snapshot(state, **kwargs)
+    assert decode_snapshot(raw).messages == state.messages
+    raw['messages'][-1]['failure']['retry'] = True
+    with pytest.raises(ValueError):
+        decode_snapshot(raw)

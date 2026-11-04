@@ -34,7 +34,7 @@ def make_session(tmp_path, *, mode="ask", stream=None):
                     tools=get_default_tools(tmp_path), tool_ctx={"fs_workspace": str(tmp_path)}),
         session_data=store.create_session(model="test/model", working_dir=tmp_path), session_manager=store,
         settings=SettingsManager(global_path=tmp_path / "settings.json", project_dir=tmp_path),
-        tool_repo=None, bash=None, working_dir=tmp_path, permissions=PermissionManager(mode))
+        tool_repo=None, working_dir=tmp_path, permissions=PermissionManager(mode))
 
 
 @pytest.fixture

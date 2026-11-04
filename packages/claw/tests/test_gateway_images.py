@@ -92,8 +92,9 @@ async def test_connection_scoped_image_upload_reaches_sdk_and_persists_typed_par
         assert transcript[0]["type"] == "xdog.claw.actor.v1"
         transcript = transcript_bodies(transcript)
         assert transcript[0]["content"][1]["type"] == "image"
-        assert runtime.get_session_info()["history"][0]["image_count"] == 1
-        assert "data" not in runtime.get_session_info()["history"][0]["content"][-1]
+        history = [row for row in runtime.get_session_info()["history"] if row["role"] != "system"]
+        assert history[0]["image_count"] == 1
+        assert "data" not in history[0]["content"][-1]
     finally:
         writer.close()
         other_writer.close()

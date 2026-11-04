@@ -38,11 +38,11 @@ def encode_goal(goal: Goal) -> str:
 
 def decode_goal(payload: str) -> Goal:
     data = read_json(payload)
-    # Historical wait(host) is retained verbatim, never normalized to active.
-    # Legacy v2 records remain immutable on disk; absence means not recorded.
     fields = set(Goal.__dataclass_fields__)
-    question_fields = {'question', 'impact', 'resume_when'}
-    if data.pop('format', None) != 'xdog.goal.v2' or set(data) not in (fields, fields - question_fields):
+    # Question metadata is optional in v2. Reading absent metadata must neither
+    # rewrite history/digests nor infer a question, authority or a state change.
+    required = fields - {'question', 'impact', 'resume_when'}
+    if data.pop('format', None) != 'xdog.goal.v2' or not required <= data.keys() <= fields:
         raise ValueError('Unsupported Goal record')
     if not isinstance(data['criteria'], list):
         raise ValueError('Invalid Goal criteria')

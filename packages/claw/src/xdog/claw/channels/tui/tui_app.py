@@ -12,7 +12,7 @@ Component tree (matching OpenClaw exactly):
         ├── chatLog (ChatLog extends Container)
         │   ├── UserMessage (Container: Spacer + Markdown with bg/color)
         │   ├── AssistantMessage (Container: Spacer + Markdown, default fg)
-        │   └── SystemMessage (Spacer + Text)
+        │   └── SystemMessage (metadata + marked plain text)
         ├── statusContainer (Container: swaps Loader / Text)
         ├── footer (Text)
         └── editor (CustomEditor)
@@ -55,6 +55,7 @@ from xdog.ai.types import ImageContent
 from xdog.claw.channels.tui.history_panel import HistoryPanel
 from xdog.claw.channels.tui.mcp_data import McpDataReceiver
 from xdog.claw.channels.tui.message_metadata import clean_metadata
+from xdog.claw.channels.tui.message_metadata import details as metadata_details
 from xdog.claw.channels.tui.message_metadata import label as metadata_label
 from xdog.claw.channels.tui.source_reader import SourceReceiver
 from xdog.claw.channels.tui.submission import TERMINAL, NativeSubmission, valid_namespace, validate_receipt
@@ -73,7 +74,7 @@ from xdog.tui.components.extension_stack import ExtensionDialogStack
 from xdog.tui.components.extension_view import ExtensionView
 from xdog.tui.components.image import Image
 from xdog.tui.components.inline_layout import CompactText, InlineLayout
-from xdog.tui.components.input_panel import InputPanel, SlashSelectList
+from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.components.markdown import DefaultTextStyle, MarkdownTheme
 from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.components.messages import AssistantMessages, NormalMessage, ThinkingMessage, Transcript
@@ -103,7 +104,7 @@ from xdog.tui.transcript_browser import TranscriptRecord
 from xdog.tui.transcript_transfer import TransferOptions, parse_transfer
 from xdog.tui.tui import TUI, Component, Container
 from xdog.tui.url_open import ReviewedUrlOpener
-from xdog.tui.utils import apply_background_to_line, sanitize_terminal_text, truncate_to_width
+from xdog.tui.utils import apply_background_to_line, sanitize_terminal_text, strip_ansi, truncate_to_width
 
 logger = logging.getLogger(__name__)
 
@@ -367,7 +368,8 @@ class UserMessage(SharedUserMessage):
         self.set_metadata(metadata)
 
     def set_metadata(self, metadata: object) -> None:
-        self._metadata_header.set_text(theme_dim(metadata_label(clean_metadata(metadata), 'user')))
+        self.metadata = clean_metadata(metadata)
+        self._metadata_header.set_text(theme_dim(metadata_label(self.metadata, 'user')))
         self.invalidate()
 
     def render(self, width: int) -> list[str]:
@@ -381,7 +383,7 @@ class UserMessage(SharedUserMessage):
 
 class _AssistantText(NormalMessage):
     def __init__(self, text: str, metadata: object, *, kind: str = 'agent') -> None:
-        super().__init__(text, MD_THEME, marker_style=theme_dim)
+        super().__init__(text, MD_THEME, marker_style=theme_accent if kind == 'system' else theme_dim)
         self.metadata = clean_metadata(metadata)
         self._metadata_header = _MessageHeader(theme_dim(metadata_label(self.metadata, kind)))
 
@@ -409,6 +411,68 @@ class ExternalMessage(Component):
 
     def invalidate(self) -> None:
         self._text.invalidate()
+
+
+class SystemMessage(Component):
+    """Plain-text notices share the message gutter without parsing Markdown."""
+
+    transcript_role = 'system'
+    detail_title = 'notice'
+
+    def __init__(self, text: str, source: str) -> None:
+        super().__init__()
+        self.detail_body = sanitize_terminal_text(text)
+        source = sanitize_terminal_text(source).replace('\n', ' ').replace('\r', ' ')
+        self.metadata = {'role': 'system', 'source': source}
+        self._header = _MessageHeader(theme_dim(metadata_label(self.metadata, 'system')))
+        self._body = Text(theme_system(self.detail_body), 0, 0)
+
+    def render(self, width: int) -> list[str]:
+        if width <= 0:
+            return []
+        gutter = 3 if width >= 4 else 0
+        rows = self._body.render(width - gutter)
+        first = next((index for index, row in enumerate(rows) if strip_ansi(row).strip()), None)
+        if first is None:
+            return []
+        return self._header.render(width) + [
+            (f" {theme_accent('•')} " if gutter and index == first else ' ' * gutter)
+            + truncate_to_width(row, width - gutter, ellipsis='')
+            for index, row in enumerate(rows)
+        ]
+
+    def invalidate(self) -> None:
+        self._header.invalidate()
+        self._body.invalidate()
+
+
+class HandoffMessage(ExternalMessage):
+    """Keep the full historical evidence inspectable, with a small default view."""
+
+    detail_title = 'context handoff'
+
+    def __init__(self, text: str, preview: str, metadata: object) -> None:
+        super().__init__(preview, metadata)
+        self._body = sanitize_terminal_text(text)
+        self._preview = sanitize_terminal_text(preview)
+        self._expanded = False
+        self._hint = _MessageHeader(theme_dim('Ctrl+O: full handoff'))
+
+    @property
+    def detail_body(self) -> str:
+        return self._body
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self._text.set_text(self._body if expanded else self._preview)
+
+    def render(self, width: int) -> list[str]:
+        rows = super().render(width)
+        return rows + self._hint.render(width) if rows and not self._expanded else rows
+
+    def invalidate(self) -> None:
+        super().invalidate()
+        self._hint.invalidate()
 
 
 class _ThinkingText(ThinkingMessage):
@@ -616,10 +680,10 @@ class ChatLog(Transcript):
             self.input_responses.setdefault(checked['input_id'], []).append(text)
         self._append(AssistantMessage(text, thinking=thinking, metadata=checked))
 
-    def add_system(self, text: str) -> None:
-        self._append(Spacer(1))
-        self._append(Text(theme_dim('system · 来源:tui') + '\n'
-                          + theme_system(sanitize_terminal_text(text)), 1, 0))
+    def add_system(self, text: str, *, source: str = 'tui', metadata: object = None) -> None:
+        message = SystemMessage(text, source)
+        message.metadata.update(clean_metadata(metadata))
+        self._append(message)
 
     def start_assistant(self, text: str, run_id: str = "default", *, metadata: object = None) -> AssistantMessage:
         """Start a new assistant message for streaming (matching OpenClaw)."""
@@ -712,15 +776,31 @@ class ChatLog(Transcript):
         self.input_responses.clear()
 
     def detail_records(self) -> tuple[DetailRecord, ...]:
-        """Return immutable full-detail snapshots in transcript order."""
+        """Body first, technical metadata second; snapshots never alter canonical text."""
         records: list[DetailRecord] = []
-        for child in self.children:
-            if isinstance(child, ThinkingMessage) and child.detail_body.strip():
-                records.append(DetailRecord(child.detail_title, child.detail_body, "reasoning"))
-            elif isinstance(child, ExtensionCommand) and child.detail_body:
-                records.append(DetailRecord(child.detail_title, child.detail_body, "command"))
-            elif isinstance(child, ToolMessage) and child.detail_body:
-                records.append(DetailRecord(child.detail_title, child.detail_body, "tool"))
+        components = [part for child in self.children
+                      for part in ((child.thinking_message, child.normal_message)
+                                   if isinstance(child, AssistantMessage) else (child,))]
+        for child in components:
+            metadata: object = getattr(child, 'metadata', None)
+            if isinstance(child, UserMessage):
+                title, body, kind = 'user message', child.source_text, 'user'
+            elif isinstance(child, _AssistantText):
+                title, body, kind = 'agent message', child.source_text, 'assistant'
+            elif isinstance(child, ThinkingMessage):
+                title, body, kind = child.detail_title, child.detail_body, 'reasoning'
+            elif isinstance(child, ExternalMessage):
+                title, body, kind = child.detail_title, child.detail_body, 'system'
+                metadata = child._text.metadata
+            elif isinstance(child, (ToolMessage, ExtensionCommand, SystemMessage)):
+                title, body = child.detail_title, child.detail_body
+                kind = 'tool' if isinstance(child, ToolMessage) else 'system'
+            else:
+                continue
+            if body.strip():
+                tool_id = child._tool_call_id if isinstance(child, ToolMessage) else ''
+                extra = metadata_details(metadata, tool_call_id=tool_id)
+                records.append(DetailRecord(title, body + extra, kind))
         return tuple(records)
 
     def _append(self, comp: Component) -> None:
@@ -741,9 +821,6 @@ class _EditorTheme:
 
 
 _EDITOR_THEME = _EditorTheme()
-
-# Compatibility alias retained for callers that imported the former private type.
-_SelectList = SlashSelectList
 
 
 class CustomEditor(InputPanel):
@@ -808,6 +885,7 @@ class ChatApp:
         self._exit_requested = False
         self._draft_quit_failures: tuple[int, ...] | None = None
         self._has_connected = False
+        self._connection_notices: list[str] = []
         self._connection_ready = False
         self._connection_generation = 0
         self._history_loading = False
@@ -914,7 +992,6 @@ class ChatApp:
         self._mcp_browser_owner_supported = False
         self._mcp_owner_request: tuple[str, str, str] | None = None
         self._mcp_data_supported = False
-        self._mcp_content_types_supported = False
         self._mcp_requests: set[str] = set()
         self._compaction_supported = False
         self._compact_pending: tuple[str, str] | None = None
@@ -924,7 +1001,6 @@ class ChatApp:
         self._skills_session = ""
         self._skills_deadline = 0.0
         self._tool_inventory_supported = False
-        self._tool_inventory_selection_supported = False
         self._tools_request = ''
         self._tools_session = ''
         self._tools_deadline = 0.0
@@ -941,8 +1017,9 @@ class ChatApp:
         self._routed_images: dict[str, tuple[Attachment, ...]] = {}
         self._active_images: tuple[Attachment, ...] = ()
         self._attachment_transport = False
-        self._history_format = 1
-        self._history_tools: dict[str, ToolMessage] = {}
+        self._history_tools: dict[tuple[str, str], ToolMessage] = {}
+        self._group_history_dirty = False
+        self._group_history_refresh = False
         self._acp_seen_session = ""
         self._acp_seen: set[str] = set()
         self._pending_input_views: dict[str, dict[str, Any]] = {}
@@ -972,9 +1049,6 @@ class ChatApp:
         # Build component tree (matching OpenClaw tui.ts exactly)
         self._tui = TUI()
 
-        # Public/private compatibility handles remain available, but header and
-        # the former status container are no longer duplicate rendered surfaces.
-        self._header = Text("", 1, 0)
         self._chat_log = ChatLog()
         self._output_epoch = 0
         self._artifact_loader = ArtifactLoader(self._recv_queue.put)
@@ -991,7 +1065,6 @@ class ChatApp:
         self._work_container.add_child(self._work_summary)
         self._extension_view = ExtensionView(lambda: self._extension_snapshot)
         self._work_container.add_child(self._extension_view)
-        self._status_container = Container()
         self._footer = StatusLine(theme_dim)
         self._keymap = PromptKeymap.load(get_config_dir() / "keybindings.json")
         self._editor = CustomEditor()
@@ -1019,8 +1092,6 @@ class ChatApp:
         self._update_hints()
         self._banner_added = False
 
-        self._status_text: Text | None = self._footer
-        self._status_loader = None
         self._layout = InlineLayout(
             transcript=self._chat_log,
             work=self._work_container,
@@ -1181,7 +1252,7 @@ class ChatApp:
         self._details_open = not self._details_open
         if self._details_open:
             self._details_panel.show_latest(from_start=True)
-        self._editor.set_focus(not self._details_open)
+        self._editor.focused = not self._details_open
         self._tui.set_focus(self._details_panel if self._details_open else self._editor)
         self._details_expanded = self._details_open
         self._layout.details = self._details_panel if self._details_open else None
@@ -1885,10 +1956,6 @@ class ChatApp:
         document = self._mcp_document
         if document is None or self._mcp_owner_context != self._mcp_context_key():
             return
-        if not self._mcp_content_types_supported and any(not block.content_type for block in document.blocks):
-            self._chat_log.add_system("Updated typed-content gateway required to insert legacy previews; "
-                                      "payload type is unreported. Preview/export remain available.")
-            return
         try:
             text = document.draft_text()
         except ValueError as exc:
@@ -2086,8 +2153,7 @@ class ChatApp:
         self._tools_deadline = time.monotonic() + 15
         panel.begin_inventory_read()
         self._queue_request({'type': 'tool_inventory_read', 'request_id': self._tools_request,
-                             'group_id': self.group_id, 'session_id': self._tools_session,
-                             **({'include_selection': True} if self._tool_inventory_selection_supported else {})})
+                             'group_id': self.group_id, 'session_id': self._tools_session})
 
     def _cancel_tools(self) -> None:
         if self._tools_request and self._connection_ready:
@@ -2763,7 +2829,6 @@ class ChatApp:
                 self._state["model"] = msg["model"]
             self._state["image_input"] = msg.get("image_input")
             self._state["image_limits"] = msg.get("image_limits", {})
-            self._history_format = int(msg.get("history_format", 2))
             self._history_loading = int(msg.get("history_count", 0)) > 0
             self._replaying_history = self._history_loading
             self._connection_ready = not self._history_loading
@@ -2786,7 +2851,7 @@ class ChatApp:
         self._details_expanded = False
         self._layout.details = None
         self._tui.set_focus(self._editor)
-        self._editor.set_focus(True)
+        self._editor.focused = True
         self._update_hints()
         self._tui.request_render()
 
@@ -3231,17 +3296,17 @@ class ChatApp:
             self._chat_log.add_system("Invalid extension model limits ignored")
 
     def _update_header(self) -> None:
-        """Append the startup identity to durable transcript once."""
+        """Show connection notices after history, never among historical rows."""
+        if self._history_loading:
+            return
         st = self._state
-        session_short = str(st.get("session_id", "?"))[:12]
-        text = (
-            f"claw tui - {st.get('socket_url', '')} "
-            f"- agent {st.get('group_id', 'main')} "
-            f"- session {session_short}"
-        )
-        self._header.set_text(theme_header(text))
+        metadata = {'group': st.get('group_id', 'main'), 'session_id': st.get('session_id', ''),
+                    'endpoint': st.get('socket_url', '')}
+        notices, self._connection_notices = self._connection_notices, []
+        for notice in notices:
+            self._chat_log.add_system(notice, metadata=metadata)
         if not self._banner_added:
-            self._chat_log.add_child(self._header)
+            self._chat_log.add_system(f"Connected · group {st.get('group_id', 'main')}", metadata=metadata)
             self._banner_added = True
 
     def _update_footer(self) -> None:
@@ -3844,28 +3909,52 @@ class ChatApp:
         if changed:
             self._tui.request_render()
 
+        self._refresh_group_history()
+
     # ── Response handling (matching OpenClaw's event handler patterns) ─
+
+    def _refresh_group_history(self) -> None:
+        if (not self._group_history_dirty or self._group_history_refresh or self._history_loading
+                or not self._connection_ready or self._active_run_id is not None
+                or self._pending_command is not None):
+            return
+        self._group_history_dirty = False
+        self._group_history_refresh = True
+        self._connection_ready = False
+        self._queue_request({'type': 'ping', 'group_id': self.group_id})
 
     def _replay_history_entries(self, entries: list[Any]) -> None:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             role = entry.get("role")
+            session_id = str(entry.get('session_id', ''))
+            if role == 'system':
+                content = str(entry.get('content', ''))
+                metadata = {**entry.get('message_metadata', {}), 'role': 'system', 'source': 'history',
+                            'group': self.group_id, 'session_id': session_id}
+                if entry.get('type') == 'handoff':
+                    preview = entry.get('preview')
+                    self._chat_log._append(HandoffMessage(content, preview if isinstance(preview, str)
+                        else 'Context handoff', metadata))
+                elif entry.get('type') == 'compaction':
+                    self._chat_log.add_user(content, metadata=metadata)
+                else:
+                    self._chat_log.add_system(content, source='history', metadata=metadata)
+                continue
             metadata = {**entry.get('message_metadata', {}),
                         'source': entry.get('message_metadata', {}).get('source') or entry.get('channel', ''),
-                        'group': self.group_id}
+                        'group': self.group_id, 'session_id': session_id}
             if entry.get('message_id'):
                 metadata.setdefault('input_id', entry['message_id'])
             raw_content = entry.get("content", "")
             channel = entry.get("channel", "")
-            parts = raw_content if self._history_format >= 2 and isinstance(raw_content, list) else []
+            parts = raw_content if isinstance(raw_content, list) else []
             content = raw_content if isinstance(raw_content, str) else "".join(
                 str(part.get("text", ""))
                 for part in parts
                 if isinstance(part, dict) and part.get("type") == "text"
             )
-            if channel == "scheduler":
-                continue
             if role == "user" and (content or entry.get("image_count")):
                 if entry.get("image_count"):
                     content += f"\n[Images: {entry['image_count']}]"
@@ -3889,10 +3978,10 @@ class ChatApp:
                 for part in parts:
                     if isinstance(part, dict) and part.get("type") == "toolCall":
                         call_id = str(part.get("id", ""))
-                        self._history_tools[call_id] = self._chat_log.add_tool(
+                        self._history_tools[session_id, call_id] = self._chat_log.add_tool(
                             str(part.get("name", "tool")),
                             part.get("arguments") if isinstance(part.get("arguments"), dict) else None,
-                            tool_call_id=call_id, metadata=metadata,
+                            tool_call_id=f"{session_id}:{call_id}" if session_id else call_id, metadata=metadata,
                         )
             elif role == "toolResult":
                 call_id = str(entry.get("tool_call_id", ""))
@@ -3901,12 +3990,12 @@ class ChatApp:
                     for part in parts
                     if isinstance(part, dict) and part.get("type") == "text"
                 )
-                tool = self._history_tools.get(call_id)
+                tool = self._history_tools.get((session_id, call_id))
                 if tool is None:
                     tool = self._chat_log.add_tool(
                         str(entry.get("tool_name", "tool")),
                         None,
-                        tool_call_id=call_id, metadata=metadata,
+                        tool_call_id=f"{session_id}:{call_id}" if session_id else call_id, metadata=metadata,
                     )
                 elif metadata:
                     tool.metadata = clean_metadata(metadata)
@@ -3927,11 +4016,16 @@ class ChatApp:
             return
         if msg_type in {"acp_input_completed", "channel_input_completed"}:
             if (msg.get("group_id") != self.group_id or not isinstance(msg.get("session_id"), str)
-                    or not msg.get("session_id") or self._gateway_session_id
-                    and msg.get("session_id") != self._gateway_session_id):
+                    or not msg.get("session_id")):
                 return
             if not all(isinstance(msg.get(key), str) for key in
                        ("message_id", "source", "instruction", "response", "error")):
+                return
+            if self._gateway_session_id and msg['session_id'] != self._gateway_session_id:
+                # A completion is only an invalidation hint, never permission to
+                # switch owners. Read the actual current group via the handshake.
+                self._group_history_dirty = True
+                self._refresh_group_history()
                 return
             if self._acp_seen_session != msg["session_id"]:
                 self._acp_seen_session = msg["session_id"]
@@ -3989,6 +4083,8 @@ class ChatApp:
             self._access_supported = False
             self._access_read_only, self._access_revision, self._access_session = None, -1, ''
             self._connection_generation = generation
+            self._connection_notices.clear()
+            self._group_history_refresh = self._has_connected
             self._native_query = None
             self._native_supported = False
             self._native_namespace = ''
@@ -4001,7 +4097,6 @@ class ChatApp:
             self._tools_request = ''
             self._tools_deadline = 0.0
             self._tool_inventory_supported = False
-            self._tool_inventory_selection_supported = False
             self._session_cancel_supported = False
             self._saved_source_supported = False
             if self._saved_scope is not None and self._transcript_panel is not None:
@@ -4062,6 +4157,14 @@ class ChatApp:
             return
         event_generation = msg.get("_connection_generation")
         if event_generation is not None and event_generation != self._connection_generation:
+            return
+        if msg_type == 'error' and self._group_history_refresh and not msg.get('run_id'):
+            self._group_history_refresh = self._group_history_dirty = False
+            self._connection_ready = True
+            self._session_context_stale = True
+            self._chat_log.add_system('Group history unavailable; previous view and draft retained. '
+                                      'Reconnect to refresh; no work was replayed.')
+            self._tui.request_render()
             return
         if msg_type == 'input_status_result':
             self._native_receipt_result(msg)
@@ -4633,8 +4736,12 @@ class ChatApp:
             if self._child_panel is not None:
                 self._child_panel.queue_enabled = self._child_queues_supported
             actual = str(msg.get("session_id") or "")
-            refresh_current = (self._has_connected and actual != self._gateway_session_id
+            refresh_current = (self._has_connected
+                               and (actual != self._gateway_session_id or self._group_history_refresh)
                                and msg.get("session_controls") == 1 and self._active_run_id is None)
+            if self._group_history_refresh and self._active_run_id is not None:
+                self._group_history_dirty = True
+            self._group_history_refresh = False
             if self._has_connected and actual != self._gateway_session_id and msg.get("session_controls") == 1:
                 self._session_context_stale = not refresh_current
             if refresh_current:
@@ -4642,6 +4749,7 @@ class ChatApp:
                 # activation or user/model input is sent after reconnect.
                 self._output_epoch += 1
                 self._chat_log.clear_all()
+                self._banner_added = False
                 self._editor.reset_history()
                 self._history_tools.clear()
                 self._usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
@@ -4701,13 +4809,9 @@ class ChatApp:
                                                           and msg.get("extension_command_results") == 1)
             self._mcp_data_supported = type(msg.get("mcp_context")) is int and msg["mcp_context"] == 1
             self._tool_inventory_supported = (type(msg.get('tool_inventory')) is int and msg.get('tool_inventory') == 1)
-            self._tool_inventory_selection_supported = (type(msg.get('tool_inventory_selection')) is int
-                                                        and msg.get('tool_inventory_selection') == 1)
             if isinstance(self._transcript_panel, ToolInventoryPanel) and not self._tool_inventory_supported:
                 self._cancel_tools()
                 self._transcript_panel.invalidate_inventory('Tool-inventory capability withdrawn; no cached fallback')
-            self._mcp_content_types_supported = (type(msg.get("mcp_content_types")) is int
-                                                  and msg["mcp_content_types"] == 1)
             self._mcp_supported = type(msg.get("mcp_controls")) is int and msg["mcp_controls"] == 1
             self._mcp_browser_owner_supported = (type(msg.get('mcp_browser_owner')) is int
                                                  and msg['mcp_browser_owner'] == 1)
@@ -4772,13 +4876,11 @@ class ChatApp:
             self._history_loading = int(msg.get("history_count", 0)) > 0
             self._connection_ready = not self._history_loading
             connection_status = "syncing" if self._history_loading else "connected"
-            gid = self._state["group_id"]
-            sid = self._state["session_id"][:12]
 
             # Only show session/history info on first connect (not reconnect)
             if not self._has_connected:
                 self._has_connected = True
-                self._chat_log.add_system(f"session agent:{gid}:{sid}")
+                self._connection_notices = []
 
                 # Replay chat history from transcript (matching OpenClaw's
                 # renderInitialMessages / renderSessionContext)
@@ -4786,18 +4888,14 @@ class ChatApp:
                 history_count = int(msg.get("history_count", len(history)))
                 self._replaying_history = self._history_loading
                 if history_count:
-                    self._chat_log.add_system(
-                        f"resumed session: {sid} ({gateway_turn_count} turns)"
-                    )
-                    self._history_format = int(msg.get("history_format", 1))
+                    self._connection_notices.append(f"Resumed context · {gateway_turn_count} turns")
                     if history:
                         self._replay_history_entries(history)
                 else:
-                    self._chat_log.add_system(f"new session: {sid}")
+                    self._connection_notices.append("New context")
             elif refresh_current:
-                self._history_format = int(msg.get("history_format", 1))
                 self._replaying_history = self._history_loading
-                self._chat_log.add_system(f"Current group context: {sid}")
+                self._connection_notices = ["Current group context loaded"]
                 history = msg.get("history", [])
                 if history:
                     self._replay_history_entries(history)
@@ -4822,6 +4920,8 @@ class ChatApp:
             self._replaying_history = False
             self._history_tools.clear()
             self._history_loading = False
+            if self._has_connected:
+                self._update_header()
             pending, self._pending_input_views = self._pending_input_views, {}
             for notice in pending.values():
                 self._handle_response(notice)
@@ -4926,6 +5026,8 @@ class ChatApp:
                     self._cancel_source_read()
                     if self._transcript_panel is not None:
                         self._transcript_panel.set_source_status("Source session changed; refresh explicitly")
+                if actual != self._gateway_session_id:
+                    self._group_history_dirty = True
                 self._gateway_session_id = actual
                 self._state["session_id"] = self._gateway_session_id
                 self._update_footer()
@@ -4986,6 +5088,9 @@ class ChatApp:
 
         # Final response (matching OpenClaw's chat event: state=final)
         if msg_type == "response" or msg_type == "final":
+            current = msg.get('current_session_id')
+            if isinstance(current, str) and current and current != self._gateway_session_id:
+                self._group_history_dirty = True
             run_id = msg.get("run_id", "default")
             self._native_finished(str(run_id))
             self._restore_uncertain_inputs(str(run_id))
@@ -5075,6 +5180,7 @@ class ChatApp:
                     self._close_navigation()
                 self._history_loading = False
                 self._replaying_history = False
+                self._group_history_refresh = False
                 self._history_tools.clear()
                 if isinstance(self._transcript_panel, ToolInventoryPanel):
                     self._tools_request = ''
@@ -5163,10 +5269,11 @@ class ChatApp:
             self._chat_log.clear_all()
             self._usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
             self._last_turn_usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-            sid = self._state["session_id"][:12]
-            self._chat_log.add_system(f"new session: {sid}")
+            self._chat_log.add_system("New context", metadata={"session_id": self._state["session_id"]})
             self._update_header()
             self._update_footer()
+            self._group_history_dirty = True
+            self._refresh_group_history()
             return
 
         if msg_type == "status":
@@ -5353,7 +5460,7 @@ class ChatApp:
                          "extension_command_catalog": 1,
                          "extension_argument_completion": 1, "extension_argument_cancel": 1,
                          "extension_argument_context": 1,
-                         "mcp_content_types": 1, "access_controls": 1,
+                         "access_controls": 1,
 
                          "tool_inventory": 1,
                          "skill_controls": 1, "session_compaction": 1, "saved_source": 1, "saved_timeline": 1,

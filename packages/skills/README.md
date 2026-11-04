@@ -5,8 +5,8 @@ hub ships **goal** and **plan**. Flow and Eyes keep their independent engines an
 packaged skills; they are not copied here. The distribution depends directly only
 on `xdog-agent` and stdlib, not a model harness or Eyes runtime.
 
-Coding and Claw include `xdog-skills` by default; their `skills` extra remains
-compatible. Other consumers can install the hub directly. Metadata discovery/import
+Coding and Claw include `xdog-skills` by default. The redundant `skills` extras
+are removed; other consumers can install the hub directly. Metadata discovery/import
 is inert. The installed Goal capability independently contributes native commands,
 the actual owner-bound `goal` tool and discoverable skill metadata. There is no
 Goal enable switch. **The skill body is not active by default**: load it through

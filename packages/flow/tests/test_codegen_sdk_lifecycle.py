@@ -484,27 +484,22 @@ async def test_generated_main_closes_actual_request_stream_on_success_or_timeout
         await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
 
 
-async def test_generated_legacy_model_override_matches_sdk_without_mutating_snapshot(tmp_path: Path) -> None:
-    saved = {"model": "removed/old", "system_prompt": "LEGACY_BASE"}
-    original = dict(saved)
-    node = NodeDef(id="child", model="node/new", prompt="child question", inherit=InheritSpec("ancestor"),
-                   output_ports=(Port("out"),))
+@pytest.mark.parametrize('saved', [{}, {'messages': []}, {'model': 'removed/old', 'system_prompt': 'OLD_BASE'}])
+async def test_generated_and_sdk_reject_unversioned_inheritance_without_model_calls(tmp_path, saved):
+    before = copy.deepcopy(saved)
+    node = NodeDef(id='child', model='node/new', prompt='child question', inherit=InheritSpec('ancestor'),
+                   output_ports=(Port('out'),))
     module = generated(workflow(node), tmp_path)
-    module["_SESSIONS"]["ancestor"] = saved
+    module['_SESSIONS']['ancestor'] = saved
     adapter = Adapter()
-    outputs, tokens = await module["node_child"](adapter, module["RuntimeContext"](1, "child", "test"))
-    value, sdk_tokens, sdk_saved = await interpreted(node, tmp_path, Adapter(), saved, system_prompt="")
-    assert outputs == {"out": value} and tokens == sdk_tokens == 5
-    assert saved == original and "removed/old" not in adapter.resolved
-    compiled_saved = module["_SESSIONS"]["child"]
-    # Legacy data carries no session identity; each fresh Agent correctly owns
-    # a new one. Versioned parity tests above still compare that identity.
-    assert compiled_saved["session_id"] and sdk_saved["session_id"]
-    assert compiled_saved["session_id"] != sdk_saved["session_id"]
-    assert normalized({k: v for k, v in compiled_saved.items() if k != "session_id"}) == normalized(
-        {k: v for k, v in sdk_saved.items() if k != "session_id"}
-    )
+    with pytest.raises(ValueError, match='missing fields'):
+        await module['node_child'](adapter, module['RuntimeContext'](1, 'child', 'test'))
+    assert not adapter.calls and 'child' not in module['_SESSIONS']
+    with pytest.raises(ValueError, match='missing fields'):
+        await interpreted(node, tmp_path, Adapter(), saved, system_prompt='')
+    assert saved == before
     assert all(agent.closed for agent in TrackedAgent.created) and not adapter.close_calls
+
 
 
 async def test_generated_close_failure_is_not_reported_as_success(

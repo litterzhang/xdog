@@ -151,13 +151,13 @@ def test_image_preview_cycles_exact_attachments_without_changing_composer_or_sou
 
 @pytest.mark.parametrize('width,budget', [(0, 8), (1, 8), (23, 8), (90, 0), (90, 2)])
 def test_tiny_unicode_or_hidden_review_cannot_confirm(width, budget):
-    from xdog.tui.utils import visible_width
+    from xdog.tui.utils import string_width
     panel, caches, original, acts = setup()
     caches['current']['start', 'recovered/current/input'] = replace(original, text='宽 🐕\n' * 20)
     panel.render(90)
     panel.handle_input(KeyEvent('enter'))
     panel.set_render_budget(budget)
-    assert all(visible_width(row) <= width for row in panel.render(width))
+    assert all(string_width(row) <= width for row in panel.render(width))
     panel.handle_input(KeyEvent('enter'))
     assert not acts
 

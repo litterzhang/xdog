@@ -43,7 +43,7 @@ def test_bash_action_profiles_are_rejected_at_live_capture(actions: tuple[str, .
 def test_historical_incident_stays_readable_but_cannot_be_readmitted() -> None:
     value = {'tools': ['bash', 'filesystem'], 'tool_actions': {'bash': ['*'], 'filesystem': ['read']}}
     before = copy.deepcopy(value)
-    config = ChildConfig.from_record(value)
+    config = ChildConfig.from_dict(value)
     assert config.to_dict()['tool_actions'] == value['tool_actions']
     with pytest.raises(ValueError, match='not a multi-action tool'):
         ChildDelegation.capture([create_bash_tool(), filesystem()], config.tools, config.tool_actions)
@@ -106,7 +106,6 @@ def test_empty_action_selection_remains_explicit_deny_all_not_unrestricted() -> 
     ({'type': 'object', 'properties': {'action': {'const': 'read'}}}, 'read', 'write'),
     ({'type': 'object', 'properties': {'action': {'$ref': '#/$defs/action'}},
       '$defs': {'action': {'enum': ['read']}}}, 'read', 'write'),
-    ({'type': 'object', 'enum': [{'action': 'read', 'path': '/a'}]}, 'read', 'write'),
     ({'type': 'object', 'properties': {'action': {'type': 'string', 'pattern': '^read$'}}}, 'read', '*'),
     ({'type': 'object', 'properties': {'action': {'enum': ['*', 'read']}}}, '*', 'write'),
 ])

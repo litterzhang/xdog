@@ -22,51 +22,20 @@ class AccessState:
 
     @classmethod
     def from_dict(cls, value: Any) -> AccessState:
-        if value is None:
-            return cls()
         if (not isinstance(value, dict) or set(value) != {'read_only', 'revision'}
                 or type(value['read_only']) is not bool or type(value['revision']) is not int
                 or value['revision'] < 0):
             raise ValueError('Invalid saved access scope; refusing writable restore')
         return cls(value['read_only'], value['revision'])
 
-    @classmethod
-    def legacy(cls, value: Any) -> AccessState:
-        """Read-only historical plan codec. Never install a tool or execute old plan text."""
-        if value is None:
-            return cls()
-        if (not isinstance(value, dict) or set(value) - {'mode', 'revision', 'objective', 'explanation', 'steps'}
-                or not isinstance(value.get('mode'), str) or value.get('mode') not in {'off', 'planning', 'executing'}
-                or type(value.get('revision')) is not int or value['revision'] < 0):
-            raise ValueError('Invalid legacy plan; refusing writable restore')
-        for key, limit in [('objective', 4000), ('explanation', 4000)]:
-            text = value.get(key, '')
-            if not isinstance(text, str) or len(text.encode()) > limit:
-                raise ValueError('Invalid legacy plan text')
-        rows = value.get('steps', [])
-        if not isinstance(rows, (list, tuple)) or len(rows) > 32:
-            raise ValueError('Invalid legacy plan steps')
-        active = 0
-        for row in rows:
-            if (not isinstance(row, dict) or set(row) != {'description', 'status'}
-                    or not isinstance(row['description'], str) or not row['description'].strip()
-                    or len(row['description'].encode()) > 2000
-                    or not isinstance(row['status'], str)
-                    or row['status'] not in {'pending', 'in_progress', 'completed'}):
-                raise ValueError('Invalid legacy plan step')
-            active += row['status'] == 'in_progress'
-        if active > 1 or value['mode'] != 'off' and not value.get('objective', '').strip():
-            raise ValueError('Invalid legacy plan objective/status')
-        return cls(value['mode'] == 'planning', value['revision'])
 
     @classmethod
     def saved(cls, record: dict[str, Any]) -> AccessState:
-        # A present malformed/null new field must never fall back to permissive legacy defaults.
-        if 'access' in record:
-            if record['access'] is None:
-                raise ValueError('Missing saved access scope')
-            return cls.from_dict(record['access'])
-        return cls.legacy(record.get('plan'))
+        if {'plan', 'legacy_plan'} & record.keys():
+            raise ValueError('Retired planning records are unsupported; no permission migration')
+        if 'access' not in record or record['access'] is None:
+            raise ValueError('Missing saved access scope')
+        return cls.from_dict(record['access'])
 
     def retain_restriction(self, current: AccessState) -> AccessState:
         """Navigating history is not an explicit release of a live host restriction."""

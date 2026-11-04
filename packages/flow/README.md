@@ -912,3 +912,15 @@ commercial ones.
 
 In short: **use it, and what it produces is yours; fork it or offer it as a
 service, and share your changes.**
+
+### Checkpoint compatibility
+
+Interpreter and generated modules share the `xdog.flow.checkpoint.v1` contract:
+the graph/defaults/port shapes and each computed node's definition are pinned, including earlier loop iterations.
+Resuming with changed wiring, completed computations, explicit input or an
+unversioned checkpoint is rejected before adopting old work. There is no silent
+migration. A node with no retained computation may have its code/prompt deliberately repaired before
+resume; already completed nodes are not replayed. Referenced Python modules and
+other external artifacts must still be version-pinned by the host; hashing a
+module reference does not hash that module's contents. Checkpoints contain run
+state and require trusted storage; the contract hash is not authentication.

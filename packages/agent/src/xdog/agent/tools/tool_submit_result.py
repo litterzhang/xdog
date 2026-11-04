@@ -10,9 +10,8 @@ Why a sink instead of writing a new ctx key: ToolDef dispatch passes the handler
 a **shallow copy** of ``tool_ctx``. Mutating the shared sink value remains visible
 to the caller after the agent turn drains; adding a context key would not.
 
-The schema may be a JSON Schema (validated with fastjsonschema), or a flat
-``{field_name: json_type}`` mapping requiring each declared field with a matching
-type while allowing extra fields. With no schema, any JSON value is accepted.
+The schema is an offline Draft 2020-12 JSON Schema object. With no schema, any
+JSON value is accepted; old flat field/type maps are not converted.
 The retired Flow-specific context keys are explicitly rejected, not interpreted
 as an unconstrained submission or translated into the generic contract.
 """
@@ -24,62 +23,33 @@ from typing import Any
 from xdog.agent.core import AgentTool
 from xdog.agent.tool_def import Param, ToolDef
 
-# JSON-schema type name -> the Python type(s) that satisfy it.
-_JSON_TYPES: dict[str, tuple[type, ...]] = {
-    "string": (str,),
-    "integer": (int,),
-    "number": (int, float),
-    "boolean": (bool,),
-    "array": (list,),
-    "object": (dict,),
-}
-
-
-def _looks_like_json_schema(schema: dict[str, Any]) -> bool:
-    """True if *schema* is a JSON Schema (has ``type``/``properties``) vs the
-    legacy flat ``{field: json_type}`` mapping."""
-    return "type" in schema or "properties" in schema
-
 
 def _validate_against_schema(result: Any, schema: Any) -> str | None:
-    """Return an error string if *result* violates *schema*, else ``None``.
-
-    *schema* is either a real JSON Schema (validated with fastjsonschema) or the
-    legacy flat ``{field: json_type}`` mapping (presence + type of declared
-    fields; extra fields pass).  A falsy schema accepts anything.
-    """
-    if not schema:
+    """Validate only an explicit offline JSON Schema object, with no shorthand."""
+    if schema is None:
         return None
     if not isinstance(schema, dict):
-        return "invalid schema (expected an object)"
+        return 'invalid schema (expected a JSON Schema object)'
+    from jsonschema import Draft202012Validator
+    from xdog.ai.utils.validation import validate_tool_schema
 
-    if _looks_like_json_schema(schema):
-        import fastjsonschema
-
-        try:
-            fastjsonschema.compile(schema)(result)
-        except fastjsonschema.JsonSchemaException as exc:
-            return str(exc)
-        except ValueError as exc:  # invalid schema — don't block the agent on our bug
-            return f"invalid schema: {exc}"
-        return None
-
-    # Legacy flat {field: json_type} mapping.
-    if not isinstance(result, dict):
-        return f"result must be an object, got {type(result).__name__}"
-    for field, json_type in schema.items():
-        if field not in result:
-            return f"missing required field {field!r}"
-        expected = _JSON_TYPES.get(json_type)
-        if expected is None:
-            # Unknown type in the schema — don't block the agent on our own bug.
-            continue
-        value = result[field]
-        # bool is a subclass of int; reject it where a number/integer is wanted.
-        if json_type in ("integer", "number") and isinstance(value, bool):
-            return f"field {field!r} must be {json_type}, got boolean"
-        if not isinstance(value, expected):
-            return f"field {field!r} must be {json_type}, got {type(value).__name__}"
+    keywords = set(Draft202012Validator.VALIDATORS) | {
+        '$schema', '$id', '$defs', '$anchor', '$dynamicAnchor', '$dynamicRef', '$comment',
+        'title', 'description', 'default', 'examples', 'deprecated', 'readOnly', 'writeOnly',
+        'contentEncoding', 'contentMediaType', 'contentSchema',
+    }
+    if schema.keys() - keywords:
+        return 'invalid schema: use JSON Schema keywords, not a flat field/type mapping'
+    try:
+        validate_tool_schema(schema)
+        for error in Draft202012Validator(schema).iter_errors(result):
+            path = '.'.join(map(str, error.absolute_path)) or '$'
+            if error.validator == 'required' and isinstance(error.instance, dict):
+                missing = [name for name in error.validator_value if name not in error.instance]
+                return f'result {path} missing required fields: {", ".join(missing)}'
+            return f'result {path} violates {error.validator}'
+    except (ValueError, TypeError, RecursionError):
+        return 'invalid result schema'
     return None
 
 

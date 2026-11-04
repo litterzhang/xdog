@@ -6,8 +6,9 @@ child grants. This object only assembles actual tools and skill selections.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Unpack
 
+from xdog.agent.capabilities.options import AgentOptions
 from xdog.agent.capabilities.runtime import CapabilitySet
 from xdog.agent.core import AgentTool
 from xdog.agent.tool_effects import ToolEffect
@@ -114,7 +115,7 @@ class CapabilityAssembly:
 
     def create_agent(self, stream_fn: StreamFn, *, tool_repo: ToolRepo | None = None,
                      skill_repo: SkillRepo | None = None, config: AgentConfig | None = None,
-                     **kwargs: Any) -> Agent:
+                     active_skills: Sequence[str] = (), **kwargs: Unpack[AgentOptions]) -> Agent:
         """Create a native Agent; supplied repos ADD to the selected capabilities.
 
         No second enable list, no local override of capability contributions.
@@ -125,8 +126,6 @@ class CapabilityAssembly:
         from xdog.agent.skills import create_skill_tool
 
         self._require_started()
-        if 'tools' in kwargs or 'skills' in kwargs or 'enabled_tools' in kwargs or 'enabled_skills' in kwargs:
-            raise TypeError('Capability assembly accepts additive tool_repo and skill_repo, not enable lists')
         tools = self.tool_repo.merge()  # Per-Agent readers must never pollute the shared repo.
         if tool_repo is not None:
             tools = tools.merge(tool_repo)
@@ -137,7 +136,7 @@ class CapabilityAssembly:
         if missing:
             from xdog.agent.skills import SkillRepo
             skills = skills.merge(SkillRepo.from_packaged(missing))
-        selected = self.active_skills(kwargs.pop('active_skills', ()))
+        selected = self.active_skills(active_skills)
         if skills.list_skills() and 'skill' not in tools.names():
             tools.register(create_skill_tool(skills))
         return Agent(stream_fn, config=config, tools=tools.tools, skills=skills,

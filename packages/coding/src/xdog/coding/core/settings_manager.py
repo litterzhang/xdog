@@ -44,10 +44,10 @@ class SettingsManager:
         from xdog.coding.config import (
             GlobalConfig,
             ProjectConfig,
-            get_global_settings_path,
+            get_settings_path,
         )
 
-        self._global_path = global_path or get_global_settings_path()
+        self._global_path = global_path or get_settings_path()
         self._global = GlobalConfig.load(self._global_path)
         self._project = ProjectConfig.load(project_dir) if project_dir else ProjectConfig()
         self._session = SessionSettings()
@@ -114,11 +114,11 @@ class SettingsManager:
 
     @property
     def extension_root(self) -> Path:
-        from xdog.coding.config import get_extensions_dir, get_global_settings_path
+        from xdog.coding.config import get_extensions_dir, get_settings_path
         if not self._global.extension_dir:
             return get_extensions_dir()
         root = Path(self._global.extension_dir).expanduser()
-        return root if root.is_absolute() else (self._global_path or get_global_settings_path()).parent / root
+        return root if root.is_absolute() else (self._global_path or get_settings_path()).parent / root
 
     @property
     def extension_settings(self) -> dict[str, dict[str, Any]]:

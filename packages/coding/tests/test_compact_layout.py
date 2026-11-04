@@ -9,7 +9,7 @@ from xdog.coding.modes.interactive.components.footer import FooterComponent
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 from xdog.coding.modes.interactive.run_status import RunStatus
 from xdog.coding.modes.interactive.theme import create_default_theme
-from xdog.tui.components.bounded_details import BoundedDetails, DetailRecord
+from xdog.tui.components.details_panel import DetailRecord, DetailsPanel
 from xdog.tui.components.inline_layout import InlineLayout
 from xdog.tui.components.text import Text
 from xdog.tui.keys import KeyEvent
@@ -81,7 +81,7 @@ def test_bounded_details_keeps_frozen_records_and_supports_navigation() -> None:
         DetailRecord(title="reasoning", body="one\ntwo\nthree\nfour", kind="reasoning"),
         DetailRecord(title="bash", body="alpha\nbeta", kind="tool"),
     )
-    panel = BoundedDetails(lambda: records, max_rows=4)
+    panel = DetailsPanel(lambda: records, max_rows=4)
 
     assert "bash" in "\n".join(_plain(panel))
     assert panel.handle_input(KeyEvent(key="left"))

@@ -11,7 +11,7 @@ from xdog.coding.modes.interactive.components.chat_log import ChatLog, SessionIn
 from xdog.coding.modes.interactive.session_presenter import SessionPresenter
 from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.transcript_browser import TranscriptBrowser
-from xdog.tui.utils import sanitize_terminal_text, strip_ansi, visible_width
+from xdog.tui.utils import sanitize_terminal_text, string_width, strip_ansi
 
 
 def gray(text):
@@ -84,7 +84,7 @@ def test_unicode_narrow_widths_expansion_and_full_export_never_depend_on_preview
         chat.set_details_expanded(expanded)
         for width in range(41):
             rows = component.render(width)
-            assert all(visible_width(line) <= width for line in rows)
+            assert all(string_width(line) <= width for line in rows)
             assert all('\n' not in line and '\r' not in line for line in rows)
             if width >= 4:
                 assert sum(gray('•') in line for line in rows) == 1

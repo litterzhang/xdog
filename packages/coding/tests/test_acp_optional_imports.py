@@ -34,7 +34,7 @@ def make():
  return AgentSession(agent=Agent(lambda *_:EventStream.empty(AssistantMessage()),
   config=AgentConfig(model='test'),skills=SkillRepo().register(directory=root / 'skills', name="shared")),
   session_data=manager.create_session(model='test',working_dir=root),session_manager=manager,
-  settings=SettingsManager(),tool_repo=None,bash=None,working_dir=root)
+  settings=SettingsManager(),tool_repo=None,working_dir=root)
 session=make();session._resolve_selected_model=lambda _:None
 ui=InteractiveMode(session);ui._session_events.start()
 async def navigate():

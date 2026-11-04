@@ -352,25 +352,19 @@ class TestChildStore:
         store.save(record)
         assert store.load()[0]["messages"] == record["messages"]
 
-    async def test_historical_budget_record_loads_without_reapplying_or_restarting(
-        self, tmp_path, *, runtime_factory, child_store_type
-    ):
+    async def test_old_budget_records_are_rejected_without_replay(self, tmp_path, *, runtime_factory, child_store_type):
         store = child_store_type(tmp_path)
-        spec = ChildSpec("0123456789ab", "task")
-        store.begin(spec)
+        store.begin(ChildSpec('0123456789ab', 'task'))
         record = store.load()[0]
-        record["config"].update(timeout=1, max_model_calls=1, max_tokens=1)
-        record.update(calls=50, tokens=500000)
+        record['config'].update(timeout=1, max_model_calls=1, max_tokens=1)
         store.save(record)
-        for records in ([record], store.load()):
-            owner = runtime_factory(lambda *args: pytest.fail("Never replay"), records=records)
-            try:
-                inspected = await owner.control("inspect", spec.id)
-                assert inspected["calls"] == 50 and inspected["tokens"] == 500000
-                assert not {"timeout", "max_model_calls", "max_tokens"} & inspected["config"].keys()
-                assert not owner.active
-            finally:
-                await owner.aclose()
+        before = (store.root / (record['id'] + '.json')).read_bytes()
+        with pytest.raises(ValueError):
+            store.load()
+        with pytest.raises(ValueError):
+            runtime_factory(lambda *args: pytest.fail('No old work'), records=[record])
+        assert (store.root / (record['id'] + '.json')).read_bytes() == before
+
 
     def test_persisted_catalog_has_no_old_16_record_limit(self, tmp_path, *, child_store_type):
         store = child_store_type(tmp_path)

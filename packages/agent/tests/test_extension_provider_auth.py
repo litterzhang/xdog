@@ -58,7 +58,7 @@ async def test_registration_is_lazy_secret_free_atomic_and_retains_legacy_three_
     dispose = api.register_provider('local', rows, callback, auth=binding)
     info, bound = api.providers['local']
     assert not calls and SECRET not in repr(binding) and 'UI044_PRIVATE_SOURCE' not in repr(binding)
-    catalog = provider_catalog([info], live=True)
+    catalog = provider_catalog([info])
     assert 'auth' not in info and 'credential' not in json.dumps(catalog) and SECRET not in json.dumps(catalog)
     revision = api._provider_revision
     with pytest.raises(ValueError):

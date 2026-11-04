@@ -280,6 +280,7 @@ async def test_loopback_proxy_copilot_protocol_preserves_wire_contract(
         base_url="https://upstream.invalid",
         headers={"anthropic-beta": "provider-beta"},
         supported_protocols=("anthropic-messages",),
+        supported_generation_protocols=("anthropic-messages",),
         preferred_protocol="anthropic-messages",
     )
     provider._protocols["anthropic-messages"] = AnthropicMessagesProtocol()

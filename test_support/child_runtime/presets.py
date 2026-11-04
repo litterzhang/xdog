@@ -9,7 +9,7 @@ from xdog.ai.utils.event_stream import EventStream
 PRESETS = {
     "reviewer": {
         "description": "Inspect without tools",
-        "config": {"instructions": "REVIEW-INSTRUCTIONS", "tools": [], "inherit_context": False},
+        "config": {"system_prompt": "REVIEW-INSTRUCTIONS", "tools": [], "inherit_context": False},
     }
 }
 
@@ -35,7 +35,7 @@ class TestChildPresets:
             child = result.content[0].text
             record = await owner.control("wait", child)
             assert seen[0].preset == "reviewer" and not seen[0].inherit_context
-            assert record["config"]["instructions"] == "REVIEW-INSTRUCTIONS"
+            assert record["config"]["system_prompt"] == "REVIEW-INSTRUCTIONS"
             restored = runtime_factory(factory, records=store.load())
             try:
                 assert (await restored.control("inspect", child))["config"] == record["config"]
@@ -55,10 +55,10 @@ class TestChildPresets:
             specs.append(spec)
             return Agent(lambda *args: EventStream.empty(AssistantMessage()), config=AgentConfig(model="test/dummy"))
 
-        owner = runtime_factory(factory, presets=ChildPresets({"reader": {"config": {"instructions": "READ"}}}))
+        owner = runtime_factory(factory, presets=ChildPresets({"reader": {"config": {"system_prompt": "READ"}}}))
         try:
             child = await owner.start("task", inherit_context=False, config={"preset": "reader"})
             await owner.control("wait", child)
-            assert not specs[0].inherit_context and specs[0].instructions == "READ"
+            assert not specs[0].inherit_context and specs[0].system_prompt == "READ"
         finally:
             await owner.aclose()

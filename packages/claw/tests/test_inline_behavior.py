@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 from xdog.claw.channels.tui.tui_app import ChatApp, CustomEditor
-from xdog.tui.components.prompt_editor import PromptEditor
+from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.keys import KeyEvent
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 def _connected_app() -> ChatApp:
@@ -91,7 +91,7 @@ def test_claw_autocomplete_arrow_release_does_not_move_twice() -> None:
 def test_claw_editor_is_thin_shared_editor_with_unicode_paste_and_budget() -> None:
     editor = CustomEditor()
 
-    assert isinstance(editor, PromptEditor)
+    assert isinstance(editor, InputPanel)
     editor.set_text("a👨\u200d👩\u200d👧\u200d👦b")
     editor.handle_input(KeyEvent(key="left"))
     editor.handle_input(KeyEvent(key="left"))
@@ -123,9 +123,9 @@ def test_claw_uses_bounded_inline_tail_and_single_truncated_status() -> None:
 
     assert len(tail) <= 8
     assert len(status_rows) == 1
-    assert visible_width(status_rows[0]) <= 32
-    assert app._header not in app._layout.children
-    assert app._status_container not in app._layout.children
+    assert string_width(status_rows[0]) <= 32
+    assert not hasattr(app, "_header")  # Connection notices are inspectable SystemMessages, not a raw banner.
+    assert not hasattr(app, "_status_container")
 
 
 def test_busy_restores_active_queue_and_new_draft_once() -> None:

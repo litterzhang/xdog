@@ -80,7 +80,3 @@ class Loader(Text):
 
     def preferred_height(self, width: int) -> int:
         return max(1, super().preferred_height(width) + 1)
-
-
-# Backward compatibility alias
-LoaderComponent = Loader

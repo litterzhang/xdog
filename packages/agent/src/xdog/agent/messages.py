@@ -15,6 +15,7 @@ import math
 from typing import Any
 
 from xdog.agent.core import AgentMessage, CustomAgentMessage
+from xdog.ai.failures import ModelFailure
 from xdog.ai.types import (
     AssistantMessage,
     CostBreakdown,
@@ -138,6 +139,8 @@ def message_to_dict(msg: AgentMessage) -> dict[str, Any]:
             d["stop_reason"] = msg.stop_reason
         if msg.error_message:
             d["error_message"] = msg.error_message
+        if msg.failure is not None:
+            d["failure"] = msg.failure.to_dict()
         if msg.timestamp:
             d["timestamp"] = msg.timestamp
         return d
@@ -261,6 +264,7 @@ def dict_to_message(d: dict[str, Any]) -> AgentMessage:
             usage=usage,
             stop_reason=d.get("stop_reason", "stop"),
             error_message=d.get("error_message"),
+            failure=ModelFailure(**d["failure"]) if d.get("failure") is not None else None,
             timestamp=d.get("timestamp", 0.0),
         )
 
@@ -288,7 +292,6 @@ def dicts_to_messages(dicts: list[dict[str, Any]]) -> list[AgentMessage]:
 def default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
     """Project named canonical context content; keep unknown custom metadata out of the LLM."""
     from xdog.agent.extensions.context_message import llm_message
-    from xdog.agent.external_event import llm_message as external_message
     from xdog.agent.session_input import llm_message as session_message
 
     result: list[Message] = []
@@ -297,8 +300,6 @@ def default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
             result.append(message)
         elif (projected := llm_message(message)) is not None:
             result.append(projected)
-        elif (external := external_message(message)) is not None:
-            result.append(external)
         elif (session_input := session_message(message)) is not None:
             result.append(session_input)
     return result

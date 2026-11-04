@@ -32,7 +32,7 @@ def session(tmp_path, *, extra=()):
     owner = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model'),
                                    skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared")),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
-        settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_repo=None, bash=None,
+        settings=SettingsManager(global_path=settings), working_dir=tmp_path, tool_repo=None,
         permissions=PermissionManager('deny'))
     return owner, calls
 

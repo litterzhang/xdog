@@ -232,10 +232,13 @@ def _parse_api_model(raw: dict[str, Any]) -> Model | None:
         supported_efforts = tuple(reasoning_effort_list)
 
     # -- Capability flags --------------------------------------------------
-    supports_tool_calls = bool(supports.get("tool_calls", False))
-    supports_parallel_tool_calls = bool(supports.get("parallel_tool_calls", False))
-    supports_streaming = bool(supports.get("streaming", False))
-    supports_structured_outputs = bool(supports.get("structured_outputs", False))
+    supports_tool_calls = supports["tool_calls"] if type(supports.get("tool_calls")) is bool else None
+    supports_parallel_tool_calls = supports["parallel_tool_calls"] if type(supports.get("parallel_tool_calls")) is bool else None
+    supports_streaming = supports["streaming"] if type(supports.get("streaming")) is bool else None
+    supports_structured_outputs = supports["structured_outputs"] if type(supports.get("structured_outputs")) is bool else None
+
+    if model_type == "embeddings":
+        supports_tool_calls = supports_parallel_tool_calls = supports_streaming = supports_structured_outputs = False
 
     # -- Thinking budget range ---------------------------------------------
     thinking_budget_range: ThinkingBudgetRange | None = None
@@ -285,7 +288,7 @@ def _parse_api_model(raw: dict[str, Any]) -> Model | None:
         reasoning_effort_map=reasoning_effort_map,
         supports_usage_in_streaming=True,
         max_tokens_field=overrides.get("max_tokens_field", "max_tokens"),
-        supports_strict_mode=supports_structured_outputs,
+        supports_strict_mode=supports_structured_outputs is True,
     )
 
     # -- Name --------------------------------------------------------------
@@ -510,10 +513,10 @@ def _model_from_dict(d: dict[str, Any]) -> Model:
             tuple(sgp_raw) if isinstance(sgp_raw, list) else None
         ),
         preferred_protocol=d.get("preferred_protocol"),
-        supports_tool_calls=d.get("supports_tool_calls", True),
-        supports_parallel_tool_calls=d.get("supports_parallel_tool_calls", False),
-        supports_streaming=d.get("supports_streaming", True),
-        supports_structured_outputs=d.get("supports_structured_outputs", False),
+        supports_tool_calls=d.get("supports_tool_calls"),
+        supports_parallel_tool_calls=d.get("supports_parallel_tool_calls"),
+        supports_streaming=d.get("supports_streaming"),
+        supports_structured_outputs=d.get("supports_structured_outputs"),
         supports_web_search=d["supports_web_search"] if type(d.get("supports_web_search")) is bool else None,
         thinking_budget_range=thinking_budget_range,
         adaptive_thinking=d.get("adaptive_thinking"),

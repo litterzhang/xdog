@@ -41,7 +41,7 @@ def output_metadata(rows: Sequence[OutputRecord]) -> list[dict[str, str]]:
 def enrich_history(history: list[dict[str, Any]], records: Sequence[InputRecord],
                    outputs: Sequence[OutputRecord], session_id: str) -> None:
     """Join only exact original input/tool IDs; older unlabelled rows stay unknown."""
-    inputs = {record.envelope.message.id: record for record in records if record.session_id == session_id}
+    inputs = {record.envelope.message.id: record for record in records}
     by_input: dict[str, list[OutputRecord]] = {}
     by_call: dict[tuple[str, str], list[OutputRecord]] = {}
     for row in outputs:
@@ -60,7 +60,7 @@ def enrich_history(history: list[dict[str, Any]], records: Sequence[InputRecord]
         metadata = entry.get('message_metadata', {})
         identifier = metadata.get('input_id', '')
         record = inputs.get(identifier)
-        if record is None:
+        if record is None or record.session_id != entry.get('session_id', session_id):
             continue
         metadata = envelope_metadata(record.envelope)
         if entry['role'] == 'assistant':

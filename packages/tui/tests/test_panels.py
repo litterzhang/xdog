@@ -1,11 +1,9 @@
 """Panels work independently of Coding and Claw policy."""
 from xdog.tui.components import DetailsPanel, InputPanel, PermissionPanel, StatusLine
-from xdog.tui.components.bounded_details import BoundedDetails
 from xdog.tui.components.details_panel import DetailRecord
-from xdog.tui.components.prompt_editor import PromptEditor
 from xdog.tui.components.select_list import SelectItem
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 
 class Theme:
@@ -16,9 +14,7 @@ class Theme:
     border = staticmethod(lambda text: text)
 
 
-def test_public_panel_aliases_and_input_behavior():
-    assert PromptEditor is InputPanel
-    assert BoundedDetails is DetailsPanel
+def test_public_input_panel_behavior():
     editor = InputPanel(Theme())
     editor.set_text("draft")
     editor.handle_input(KeyEvent(key="enter", ctrl=True))
@@ -41,7 +37,7 @@ def test_permission_panel_reports_supplied_decisions_without_policy():
         panel.set_render_budget(budget)
         rows = panel.render(40)
         assert len(rows) <= budget
-        assert all(visible_width(row) <= 40 for row in rows)
+        assert all(string_width(row) <= 40 for row in rows)
 
 
 def test_details_panel_and_status_line_are_standalone():
@@ -56,7 +52,7 @@ def test_details_panel_and_status_line_are_standalone():
     status.set_fields(activity="running", model="model", context="ctx:1k/10k")
     assert "ctx:1k/10k" in status.render(50)[0]
     assert len(status.render(12)) == 1
-    assert visible_width(status.render(12)[0]) <= 12
+    assert string_width(status.render(12)[0]) <= 12
 
 
 def test_hidden_or_clipped_permission_actions_cannot_be_confirmed():
@@ -102,7 +98,7 @@ def test_permission_summary_uses_dim_on_every_wrapped_and_scrolled_line_without_
         panel.set_render_budget(10)
         for _ in range(3):
             rows = panel.render(width)
-            assert all(visible_width(row) <= width for row in rows)
+            assert all(string_width(row) <= width for row in rows)
             content_rows = [row for row in rows if 'Run goal:' in strip_ansi(row)
                             or any(char in strip_ansi(row) for char in '具体指令参数保护')]
             assert content_rows and all('\x1b[90m' in row for row in content_rows)

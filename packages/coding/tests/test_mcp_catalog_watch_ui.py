@@ -13,7 +13,8 @@ from packages.coding.tests.test_mcp_manual_picker_ui import native_mcp as native
                                     'watch_notifications', 'unwatch_notifications'])
 def test_retired_watch_request_and_result_do_not_mutate_successor(native_mcp, action):
     host, ui, panel, sent, session, calls = native_mcp
-    original = McpDocument('fixture', 'resource', 'original', (McpBlock('text', 'retained snapshot'),))
+    original = McpDocument('fixture', 'resource', 'original', (
+        McpBlock('text', 'retained snapshot', content_type='text'),))
     ui._mcp_document = original
     ui._mcp_active, ui._mcp_action = 'successor', 'read'
     panel._busy, panel._message = True, 'successor read pending'

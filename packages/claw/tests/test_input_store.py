@@ -188,3 +188,38 @@ async def test_concurrent_admission_does_not_overfill_or_delete_accepted_message
         assert [r.envelope.message.id for r in await store.records(InputScope('main', tmp_path))] == ['0', '1']
     finally:
         await store.close()
+
+
+@pytest.mark.parametrize('status', ['succeeded', 'failed', 'interrupted'])
+async def test_nullable_execution_audit_times_do_not_block_current_database_or_replay(tmp_path, status):
+    import sqlite3
+
+    from xdog.claw.core.inputs.store import InputStore
+
+    path = tmp_path / 'private' / 'input.sqlite3'
+    value = envelope(tmp_path)
+    store = await InputStore.open(path)
+    await store.enqueue(value)
+    namespace = await store.namespace(value.scope)
+    run = await store.start(await store.claim(value.scope))
+    await store.finish(run, status, response='saved result')
+    await store.close()
+    # The current v3 schema explicitly permits NULL audit timestamps. Absence is
+    # not an old format and must not rewrite authoritative terminal receipts.
+    with sqlite3.connect(path) as db:
+        db.execute('UPDATE attempts SET started_at=NULL,settled_at=NULL')
+    before = path.read_bytes()
+    store = await InputStore.open(path)
+    try:
+        retained = await store.get(value.scope, value.message.id)
+        assert retained.status == status and retained.response == 'saved result'
+        assert retained.attempt_id == run.attempt_id
+        attempt, = await store.attempts(value.scope, value.message.id)
+        assert attempt.started and attempt.started_at is None and attempt.settled_at is None
+        assert await store.claim(value.scope) is None
+        assert await store.latest_execution(value.scope, namespace=namespace) == {
+            'availability': 'unavailable', 'reason': 'execution_timestamps_not_recorded',
+        }
+        assert path.read_bytes() == before
+    finally:
+        await store.close()

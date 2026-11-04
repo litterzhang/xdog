@@ -11,6 +11,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Union
 
+from xdog.agent.context_report import ContextReport
 from xdog.agent.core import (
     AgentContext,
     AgentMessage,
@@ -151,6 +152,7 @@ class AgentLoopConfig:
     """Internal safe model boundary; must keep canonical and loop histories consistent."""
     on_stream_close_error: Callable[[Exception], None] | None = None
     """Internal owner notification when a response cannot release its resources."""
+    on_context_report: Callable[[ContextReport], None] | None = None
     on_model_request: Callable[[], None] | None = None
     """Internal observation after context validation, immediately before adapter entry."""
     get_steering_messages: GetMessagesFn | None = None

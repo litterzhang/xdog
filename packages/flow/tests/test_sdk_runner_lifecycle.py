@@ -177,17 +177,17 @@ async def test_versioned_inheritance_keeps_node_selection_and_explicit_overrides
     assert saved["base_system_prompt"] == ("NODE_BASE" if explicit_system else "ANCESTOR_BASE")
 
 
-async def test_legacy_model_override_is_copied_before_restore_validation(owned_agents: list[ObservedAgent]) -> None:
+@pytest.mark.parametrize('snapshot', [{}, {'messages': []}, {'model': 'removed/model', 'system_prompt': 'OLD_BASE'}])
+async def test_unversioned_inheritance_is_rejected_without_calls_or_sink_publication(owned_agents, snapshot):
     adapter = OfflineAdapter()
-    snapshot = {"model": "removed/model", "system_prompt": "OLD_BASE"}
-    sink: dict[str, object] = {}
-    assert await run_node(runner_for(adapter), session=snapshot, sink=sink) == ("node answer", 5)
-    assert snapshot == {"model": "removed/model", "system_prompt": "OLD_BASE"}
-    assert adapter.calls[0][0] == "node/new"
-    assert str(adapter.calls[0][1].system_prompt).endswith("OLD_BASE")
-    saved = sink["session"]
-    assert isinstance(saved, dict) and saved["base_system_prompt"] == "OLD_BASE"
+    before = copy.deepcopy(snapshot)
+    sink = {'existing': 'untouched'}
+    with pytest.raises(ValueError, match='missing fields'):
+        await run_node(runner_for(adapter), session=snapshot, sink=sink)
+    assert snapshot == before
+    assert sink == {'existing': 'untouched'} and not adapter.calls
     assert owned_agents[-1].closed and adapter.close_calls == 0
+
 
 
 @pytest.mark.parametrize("invalid", ["model", "version", "interrupted"])

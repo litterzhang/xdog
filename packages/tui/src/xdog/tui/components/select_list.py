@@ -121,7 +121,3 @@ class SelectList(Component, Generic[T]):
                 self.on_cancel_cb()
             return True
         return False
-
-
-# Backward compatibility
-SelectListComponent = SelectList

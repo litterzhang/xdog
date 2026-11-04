@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
-from xdog.tui.components.bounded_details import BoundedDetails, DetailRecord
+from xdog.tui.components.details_panel import DetailRecord, DetailsPanel
 from xdog.tui.keys import KeyEvent
 from xdog.tui.utils import strip_ansi
 
@@ -55,7 +55,7 @@ def test_details_below_status_and_editor():
 
 def test_reasoning_starts_at_top_and_log_scroll_stays_paused():
     records = [DetailRecord("reason", "\n".join(f"reason-{i}" for i in range(20)), "reasoning")]
-    panel = BoundedDetails(lambda: records, max_rows=4)
+    panel = DetailsPanel(lambda: records, max_rows=4)
     assert "reason-0" in plain(panel)
     panel.handle_input(KeyEvent(key="pagedown"))
     assert "reason-0" not in plain(panel)
@@ -166,7 +166,7 @@ def test_permission_summary_has_position_and_precise_session_scope():
 
 def test_open_details_tracks_new_records_until_user_scrolls():
     records = [DetailRecord("reason", "why", "reasoning")]
-    panel = BoundedDetails(lambda: records)
+    panel = DetailsPanel(lambda: records)
     panel.show_latest()
     assert "why" in plain(panel)
     records.append(DetailRecord("bash", "tool output", "tool"))
@@ -200,14 +200,14 @@ def test_terminal_error_releases_permission_focus():
 def test_compact_tool_uses_two_rows_and_retains_full_details():
     from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
     from xdog.coding.modes.interactive.theme import create_default_theme
-    from xdog.tui.utils import visible_width
+    from xdog.tui.utils import string_width
     tool = ToolExecutionComponent("bash", {"command": "echo " + "界" * 80}, create_default_theme())
     assert len(tool.render(36)) == 3
     output = "\n".join(f"line-{i}" for i in range(30)) + "\nLATEST"
     tool.set_streaming(output)
     rows = tool.render(36)
     assert len(rows) == 3
-    assert all(visible_width(row) <= 36 for row in rows)
+    assert all(string_width(row) <= 36 for row in rows)
     assert "LATEST" in plain(tool, 36)
     tool.set_result(output)
     assert len(tool.render(36)) == 3

@@ -37,7 +37,7 @@ async def reopen(session):
         pytest.fail("cold query must not call a model")
     agent = Agent(forbidden_stream, config=AgentConfig(model="test/model"))
     restored = AgentSession(agent=agent, session_data=data, session_manager=session.session_manager,
-        settings=session.settings, tool_repo=None, bash=None, working_dir=session.working_dir,
+        settings=session.settings, tool_repo=None, working_dir=session.working_dir,
         permissions=session.permissions)
     return restored, await SessionCapabilityHost.open(restored)
 
@@ -281,10 +281,9 @@ async def test_real_human_priority_reverses_intake_but_latest_uses_actual_start_
         await restored.aclose()
 
 
-async def test_legacy_multiple_batches_are_unavailable_without_backfill_then_new_facts_work(tmp_path):
+async def test_old_execution_rows_are_rejected_without_backfill_or_replay(tmp_path):
     session, _, runtime, host = await owner(tmp_path)
     await submit(runtime, 'old-one')
-    await submit(runtime, 'old-two')
     path = runtime.controller.store.path
     await session.aclose()
     rows = json.loads(path.read_bytes())
@@ -295,24 +294,12 @@ async def test_legacy_multiple_batches_are_unavailable_without_backfill_then_new
     before = path.read_bytes()
     restored, cold = await reopen(session)
     try:
-        assert await cold.latest_execution() == {
-            'availability': 'unavailable', 'reason': 'legacy_execution_metadata_missing'}
+        with pytest.raises(ValueError, match='Invalid input history record'):
+            await cold.latest_execution()
         assert path.read_bytes() == before
-        runtime = SessionRuntime(restored, bound=True)
-        runtime.start(setup_pending=True)
-        await runtime.activate_inputs()
-        fresh = await SessionCapabilityHost.open(restored)
-        async def execute(batch):
-            return TurnResult('succeeded', None)
-        runtime.controller._execute_batch = execute
-        outcome = await submit(runtime, 'new')
-        fact = await fresh.latest_execution()
-        assert fact['execution_id'] == outcome.batch_id and fact['message_ids'] == ['new']
-        assert fact['settled_at'] >= fact['started_at']
-        persisted = json.loads(path.read_bytes())
-        assert all('settled_at' not in row and 'started_at' not in row for row in persisted[:2])
     finally:
         await restored.aclose()
+
 
 
 @pytest.mark.parametrize('fail', [False, True])

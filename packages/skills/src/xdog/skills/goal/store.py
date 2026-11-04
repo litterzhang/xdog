@@ -167,7 +167,7 @@ def _epoch(db: sqlite3.Connection, goal_id: str) -> tuple[int, float]:
     epoch, epoch_time = 1, history[0].created_at if history else 0
     for before, after in zip(history, history[1:]):
         if after.status == 'active' and ('goal-state:' + str(after.version) in starts
-                or before.status == 'paused' or before.status == 'waiting' and before.wait_for in {'user', 'host'}):
+                or before.status == 'paused' or before.status == 'waiting' and before.wait_for == 'user'):
             epoch, epoch_time = after.version, after.updated_at
     return epoch, epoch_time
 
@@ -245,8 +245,6 @@ class GoalStore:
             if (previous is None and expected_version != 0
                     or previous is not None and previous['version'] != expected_version):
                 raise ValueError('Goal changed; re-read before updating')
-            if goal.wait_for == 'host' and (previous is None or _goal(previous).wait_for != 'host'):
-                raise ValueError('wait(host) is historical read-only data; new host waits are not supported')
             bound = db.execute('SELECT goal_id FROM current').fetchone()[0]
             if previous is None:
                 if bound is not None:

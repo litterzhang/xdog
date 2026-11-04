@@ -49,6 +49,7 @@ from xdog.agent.events import (
     TurnStartEvent,
 )
 from xdog.agent.messages import default_convert_to_llm
+from xdog.agent.tool_outcomes import EffectState, FailureKind, ToolFailure
 from xdog.agent.types import (
     AfterToolCallContext,
     AgentEventSink,
@@ -114,11 +115,10 @@ def agent_loop(
                 prompts, context, config, _emit_to_stream, stream_fn, model, options, cancel, tool_ctx,
             )
             stream.end(messages)
-        except Exception:
-            stream.end([])
-            raise
+        except (Exception, asyncio.CancelledError) as exc:
+            stream.fail(exc)
 
-    asyncio.ensure_future(_run_and_close())
+    stream.bind_producer(asyncio.create_task(_run_and_close()))
     return stream
 
 
@@ -155,11 +155,10 @@ def agent_loop_continue(
                 context, config, _emit_to_stream, stream_fn, model, options, cancel,
             )
             stream.end(messages)
-        except Exception:
-            stream.end([])
-            raise
+        except (Exception, asyncio.CancelledError) as exc:
+            stream.fail(exc)
 
-    asyncio.ensure_future(_run_and_close())
+    stream.bind_producer(asyncio.create_task(_run_and_close()))
     return stream
 
 
@@ -447,6 +446,9 @@ async def _stream_assistant_response(
     if _is_cancelled(cancel):
         raise asyncio.CancelledError
 
+    if config.on_context_report is not None:
+        from xdog.agent.context_report import inspect_context
+        config.on_context_report(inspect_context(llm_context, options, model=model))
     # Observe actual adapter entry, not merely context preparation or rejected input.
     if config.on_model_request is not None:
         config.on_model_request()
@@ -577,7 +579,7 @@ async def _execute_tool_calls_sequential(
         if _is_cancelled(cancel):
             result_msg = await _emit_tool_call_outcome(
                 tc,
-                _create_error_tool_result("Tool execution cancelled"),
+                _create_error_tool_result("Tool execution cancelled", kind="cancelled", effect="not_started"),
                 True,
                 emit,
             )
@@ -636,7 +638,7 @@ async def _execute_tool_calls_parallel(
         if _is_cancelled(cancel):
             immediate_outcomes[index] = (
                 tc,
-                _create_error_tool_result("Tool execution cancelled"),
+                _create_error_tool_result("Tool execution cancelled", kind="cancelled", effect="not_started"),
                 True,
             )
             continue
@@ -723,7 +725,7 @@ async def _prepare_tool_call(
     if tool is None or tool.execute is None:
         return {
             "kind": "immediate",
-            "result": _create_error_tool_result(f"Tool {tc.name} not found"),
+            "result": _create_error_tool_result(f"Tool {tc.name} not found", kind="unavailable", effect="not_started"),
             "is_error": True,
         }
 
@@ -743,7 +745,9 @@ async def _prepare_tool_call(
                             validation_task.cancel()
                             await asyncio.gather(validation_task, return_exceptions=True)
                             return {"kind": "immediate",
-                                    "result": _create_error_tool_result("Tool execution cancelled"), "is_error": True}
+                                    "result": _create_error_tool_result(
+                        "Tool execution cancelled", kind="cancelled", effect="not_started"),
+                                    "is_error": True}
                     await validation_task
                 finally:
                     if not validation_task.done() and not validation_task.cancelling():
@@ -758,7 +762,7 @@ async def _prepare_tool_call(
                 error_msg = "; ".join(validation.errors)
                 return {
                     "kind": "immediate",
-                    "result": _create_error_tool_result(error_msg),
+                    "result": _create_error_tool_result(error_msg, kind="arguments", effect="not_started"),
                     "is_error": True,
                 }
 
@@ -775,14 +779,15 @@ async def _prepare_tool_call(
             except asyncio.CancelledError:
                 return {
                     "kind": "immediate",
-                    "result": _create_error_tool_result("Tool execution cancelled"),
+                    "result": _create_error_tool_result(
+                        "Tool execution cancelled", kind="cancelled", effect="not_started"),
                     "is_error": True,
                 }
             if before_result is not None and before_result.block:
                 reason = before_result.reason or "Tool execution was blocked"
                 return {
                     "kind": "immediate",
-                    "result": _create_error_tool_result(reason),
+                    "result": _create_error_tool_result(reason, kind="permission", effect="not_started"),
                     "is_error": True,
                 }
 
@@ -798,7 +803,7 @@ async def _prepare_tool_call(
     except Exception as exc:
         return {
             "kind": "immediate",
-            "result": _create_error_tool_result(str(exc)),
+            "result": _create_error_tool_result(str(exc), effect="not_started"),
             "is_error": True,
         }
 
@@ -822,6 +827,7 @@ async def _execute_prepared_tool_call(
             partial_result=partial_result,
         ))
 
+    entered = False
     try:
         assert tool.execute is not None
         guard = prepared.get('execute_guard')
@@ -834,13 +840,15 @@ async def _execute_prepared_tool_call(
                 raise TypeError('Tool execution guard must be synchronous')
             if checked is not None:
                 raise TypeError('Tool execution guard must return None or raise')
+        entered = True
         result = await tool.execute(tc.id, args, cancel, on_update, ctx=tool_ctx)
         if type(result.is_error) is not bool:
             raise ValueError("Tool result error flag must be a boolean")
         return {"result": result, "is_error": result.is_error}
     except asyncio.CancelledError:
         return {
-            "result": _create_error_tool_result("Tool execution cancelled"),
+            "result": _create_error_tool_result("Tool execution cancelled", kind="cancelled",
+                                              effect="unknown" if entered else "not_started"),
             "is_error": True,
             "interrupted": True,
         }
@@ -853,7 +861,9 @@ async def _execute_prepared_tool_call(
             extra={"xdog_tool_error_represented": True, "tool_call_id": tc.id},
         )
         return {
-            "result": _create_error_tool_result(f"Tool error: {exc}"),
+            "result": _create_error_tool_result(f"Tool error: {exc}",
+                                              kind="permission" if not entered and isinstance(exc, PermissionError)
+                                              else "execution", effect="unknown" if entered else "not_started"),
             "is_error": True,
         }
 
@@ -884,7 +894,7 @@ async def _finalize_executed_tool_call(
         try:
             after_result = await config.after_tool_call(after_ctx, cancel)
         except asyncio.CancelledError:
-            result = _create_error_tool_result("Tool execution cancelled")
+            result = _create_error_tool_result("Tool execution cancelled", kind="cancelled")
             is_error = True
             executed["interrupted"] = True
             after_result = None
@@ -958,17 +968,12 @@ async def _convert_messages(
 ) -> list[Message]:
     """Convert agent messages to LLM messages via the config callback."""
     if config.convert_to_llm is None:
-        return _default_convert(messages)
+        return default_convert_to_llm(messages)
 
     result = config.convert_to_llm(messages)
     if inspect.isawaitable(result):
         return await result
     return result
-
-
-def _default_convert(messages: list[AgentMessage]) -> list[Message]:
-    """Compatibility entry point; standalone and stateful Agents share one policy."""
-    return default_convert_to_llm(messages)
 
 
 def _checked_tool_call_ids(message: AssistantMessage) -> AssistantMessage:
@@ -1011,10 +1016,7 @@ def _tools_to_ai_tools(tools: list[AgentTool] | None) -> tuple[Tool, ...]:
     )
 
 
-def _create_error_tool_result(message: str) -> AgentToolResult:
-    """Create an error tool result with a text content block."""
-    return AgentToolResult(
-        content=(TextContent(text=message),),
-        details=None,
-        is_error=True,
-    )
+def _create_error_tool_result(message: str, *, kind: FailureKind = 'execution',
+                              effect: EffectState = 'unknown') -> AgentToolResult:
+    """Keep effect uncertainty explicit; classification never authorizes replay."""
+    return AgentToolResult.from_failure(ToolFailure(kind, message, effect))

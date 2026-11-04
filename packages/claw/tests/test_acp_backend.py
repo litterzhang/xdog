@@ -87,7 +87,7 @@ async def test_enqueue_automatically_uses_real_agent_and_canonical_transcript(tm
         assert transcript[0]["type"] == "xdog.session_input.v1"
         assert transcript[0]["data"]["id"] == "event-1"
         assert transcript[0]["data"]["source"] == "Eyes"
-        display = orch.get_session_info("main")["history"]
+        display = [row for row in orch.get_session_info("main")["history"] if row["role"] != "system"]
         assert display[0]["channel"] == "acp" and "Review changes" in str(display[0]["content"])
         again = await backend.extension(peer, "xdog/enqueue", enqueue_params(tmp_path))
         assert again["status"] == "duplicate" and again["message_state"] == "succeeded"

@@ -30,7 +30,6 @@ async def main():
         session_manager=manager,
         settings=SettingsManager(),
         tool_repo=None,
-        bash=None,
         working_dir=root,
     )
     runtime = SessionRuntime(session, bound=False)

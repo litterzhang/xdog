@@ -18,7 +18,7 @@ There is no TUI console script. Import from `xdog.tui`, not `tui`.
 | `AutocompleteEngine / WorkspaceFileCompletionProvider` | `xdog.tui` | Completion interfaces and an owned filesystem worker. |
 | `render_image / detect_capabilities` | `xdog.tui` | Terminal image rendering and capability detection. |
 | `EditorComponent / UndoStack / KillRing` | `xdog.tui` | Editing protocol and primitives. |
-| `visible_width / slice_by_column / truncate_to_width` | `xdog.tui` | Display-cell-aware text helpers. |
+| `string_width / slice_by_column / truncate_to_width` | `xdog.tui` | Display-cell-aware text helpers. |
 | `AttachmentComposer / AttachmentReader / read_attachment` | `xdog.tui` | Composer ownership and bounded off-thread/explicit image reads. |
 | `TranscriptBrowser / TranscriptRecord / TranscriptView` | `xdog.tui` | Immutable full-source browsing, indexing/search and viewport data. |
 

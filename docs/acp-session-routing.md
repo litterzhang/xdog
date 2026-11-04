@@ -307,8 +307,9 @@ with diagnostics. Explicit manual archive/deletion invalidates retention/dedup
 assumptions; stop and inspect before replacing storage or rebasing evidence.
 
 The old register/deliver/heartbeat/capability host, descriptor environment and
-`session.notify` handler are removed. Historical `xdog.external_event.v1` records
-remain readable/renderable as untrusted history only, not a live delivery path.
+`session.notify` handler and historical external-event codec are removed. Only
+`xdog.session_input.v1` is recognized for external input; no old-record projection
+or automatic history migration is retained. Existing data files are not rewritten.
 No claim of exactly-once tool side effects or exhaustive filesystem audit is made.
 
 ## Verification and exclusions

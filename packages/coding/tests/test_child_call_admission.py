@@ -318,3 +318,38 @@ async def test_skill_picker_respects_host_narrowed_standard_manager_instance_cat
         assert not contexts and not session.children.runtime.active
     finally:
         await close(session)
+
+
+async def test_permission_change_during_effect_io_cannot_borrow_a_read_admission(tmp_path, monkeypatch):
+    import threading
+
+    from xdog.coding.core import child_agents
+
+    session, _ = create(tmp_path, 'allow-all')
+    entered, release = threading.Event(), threading.Event()
+    original = child_agents.classify_tool_call
+    execution = None
+    try:
+        async with real_child(session) as child:
+            (tmp_path / 'safe').write_text('must not be read under a revoked admission')
+            call = ToolCall(id='read', name='filesystem', arguments={'action': 'read', 'path': 'safe'})
+            prepared = await prepare(child, call)
+            def delayed(*args, **kwargs):
+                entered.set()
+                assert release.wait(5)
+                return original(*args, **kwargs)
+            monkeypatch.setattr(child_agents, 'classify_tool_call', delayed)
+            tool = next(tool for tool in child.state.tools if tool.name == 'filesystem')
+            execution = asyncio.create_task(tool.execute(call.id, prepared.args, ctx=child.tool_context))
+            try:
+                assert await asyncio.to_thread(entered.wait, 3)
+                session.permissions.set_mode('deny')
+            finally:
+                release.set()
+            with pytest.raises(ValueError, match='permission policy changed'):
+                await execution
+    finally:
+        release.set()
+        if execution is not None:
+            await asyncio.gather(execution, return_exceptions=True)
+        await close(session)

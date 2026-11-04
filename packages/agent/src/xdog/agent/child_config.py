@@ -7,7 +7,7 @@ import json
 import math
 import re
 import shlex
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -49,11 +49,10 @@ class ChildConfig:
     {"filesystem": ["read"]}. It does not match shell commands or expand '*'.
     Bash has command, not action: select it through tools, omit its tool_actions
     entry. Neither omission nor access='inherit' grants additional authority.
-    Historical profiles remain readable; fresh admission must capture live tools.
+    Persisted profiles use this same current schema; admission captures live tools.
     """
 
     label: str = ""
-    instructions: str = ""
     tools: tuple[str, ...] | None = None
     inherit_context: bool = False
     model: str | None = None
@@ -66,7 +65,7 @@ class ChildConfig:
     tool_scopes: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"label": self.label, "instructions": self.instructions,
+        return {"label": self.label,
                 "tools": list(self.tools) if self.tools is not None else None,
                 "inherit_context": self.inherit_context,
                 "model": self.model, "thinking": self.thinking, "preset": self.preset,
@@ -80,7 +79,7 @@ class ChildConfig:
         if not isinstance(value, dict) or set(value) - set(cls().to_dict()):
             raise ValueError("Unknown/invalid child configuration fields")
         merged = {**cls().to_dict(), **value}
-        for name, limit in (("label", 120), ("instructions", 16000), ("system_prompt", 16000)):
+        for name, limit in (("label", 120), ("system_prompt", 16000)):
             text = merged[name]
             if (not isinstance(text, str) or len(text.encode("utf-8")) > limit
                     or name == "label" and any(ord(char) < 32 or ord(char) == 127 for char in text)):
@@ -123,25 +122,13 @@ class ChildConfig:
                 raise ValueError("Child tool_actions requires non-reserved tool names and distinct action strings")
         if tools is not None and set(actions) - set(tools):
             raise ValueError("Child tool_actions cannot name tools outside the selected tool subset")
-        return cls(label=merged["label"], instructions=merged["instructions"],
+        return cls(label=merged["label"],
                    tools=tuple(tools) if tools is not None else None,
                    inherit_context=False, model=model, thinking=thinking, preset=preset,
                    system_prompt=merged["system_prompt"], skills=tuple(skills) if skills is not None else None,
                    tool_actions=tuple((name, tuple(selected)) for name, selected in sorted(actions.items())),
                    tool_scopes=child_tool_scopes(merged["tool_scopes"], tools))
 
-    @classmethod
-    def from_record(cls, value: Any) -> ChildConfig:
-        """Historical inheritance/budgets are inert, never admission controls."""
-        if not isinstance(value, dict):
-            raise ValueError("Invalid persisted child configuration")
-        historical = value.get("inherit_context", False)
-        if type(historical) is not bool:
-            raise ValueError("Child inherit_context must be boolean")
-        config = cls.from_dict({**{key: item for key, item in value.items()
-                                  if key not in {"timeout", "max_model_calls", "max_tokens"}},
-                                "inherit_context": False})
-        return replace(config, inherit_context=historical)
 
 
 
@@ -198,8 +185,7 @@ class ChildPresets:
                     or not isinstance(row["name"], str) or row["name"] in values):
                 raise ValueError("Invalid/duplicate child preset identity")
             values[row["name"]] = {"description": row["description"],
-                                   "config": {**ChildConfig.from_record(row["config"]).to_dict(),
-                                              "inherit_context": False}}
+                                   "config": ChildConfig.from_dict(row["config"]).to_dict()}
         return cls(values)
 
     def snapshot(self) -> tuple[dict[str, Any], ...]:
@@ -230,7 +216,7 @@ def parse_child_options(text: str) -> tuple[str, str, dict[str, Any]]:
     value: dict[str, Any] = {}
     access = "read-only"
     seen: set[str] = set()
-    flags = {"--label": "label", "--instructions": "instructions", "--tools": "tools",
+    flags = {"--label": "label", "--tools": "tools",
              "--model": "model", "--thinking": "thinking", "--preset": "preset",
              "--system-prompt": "system_prompt", "--skills": "skills"}
     while remaining.startswith("--"):

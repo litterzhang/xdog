@@ -205,14 +205,13 @@ def test_files_are_unique_and_match_mime_type(tmp_path):
     assert decode_image(reference.data, reference.mime_type) == image
 
 
-@pytest.mark.parametrize("command", ["image", "image_generation"])
-def test_cli_saves_images_and_returns_json(monkeypatch, tmp_path, capsys, command):
+def test_cli_saves_images_and_returns_json(monkeypatch, tmp_path, capsys):
     generation = AsyncMock(return_value=ImageGenerationResponse(
         images=(GeneratedImage(PNG),), text="Design", model="antigravity/picture", provider="antigravity",
     ))
     monkeypatch.setattr("xdog.ai.cli.ai.provider", lambda _: SimpleNamespace(image_generation=generation))
     monkeypatch.setattr("sys.argv", [
-        "xdog-ai", command, "antigravity", "picture", "Draw a screen",
+        "xdog-ai", "image", "antigravity", "picture", "Draw a screen",
         "--output-dir", str(tmp_path), "--aspect-ratio", "9:16", "--image-size", "1K", "--json",
     ])
     main()

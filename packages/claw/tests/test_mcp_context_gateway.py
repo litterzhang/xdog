@@ -62,7 +62,7 @@ async def test_slow_context_read_keeps_gateway_ping_and_cancel_responsive(tmp_pa
         await server.stop()
 
 
-def test_upgraded_client_does_not_infer_empty_legacy_payload_type_from_mime_or_metadata(tmp_path):
+def test_typed_empty_binary_cannot_be_inserted_as_text(tmp_path):
     from xdog.agent.mcp.context import McpBlock, McpDocument
 
     ui = ChatApp(str(tmp_path / 'not-connected.sock'))
@@ -70,11 +70,10 @@ def test_upgraded_client_does_not_infer_empty_legacy_payload_type_from_mime_or_m
         ui._editor.set_text('kept draft')
         ui._mcp_document = McpDocument('peer', 'resource', 'test://empty', (
             McpBlock('resource', text='[MCP content metadata]\n{"vendor/empty":true}',
-                     mime_type='application/octet-stream'),))
+                     mime_type='application/octet-stream', content_type='resource_blob'),))
         ui._mcp_owner_context = ui._mcp_context_key()
-        assert not ui._mcp_content_types_supported
         ui._mcp_insert()
         assert ui._editor.get_text() == 'kept draft' and ui._mcp_document is not None
-        assert 'payload type is unreported' in '\n'.join(ui._chat_log.render(120))
+        assert 'Binary MCP content' in '\n'.join(ui._chat_log.render(120))
     finally:
         ui._request_exit()

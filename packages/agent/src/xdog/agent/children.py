@@ -26,7 +26,6 @@ class ChildSpec:
     access: str = "read-only"
     inherit_context: bool = False
     label: str = ""
-    instructions: str = ""
     tools: tuple[str, ...] | None = None
     model: str | None = None
     thinking: str | None = None
@@ -38,17 +37,15 @@ class ChildSpec:
     tool_scopes: dict[str, Any] = field(default_factory=dict)
 
     def config(self) -> ChildConfig:
-        return ChildConfig(label=self.label, instructions=self.instructions, tools=self.tools,
+        return ChildConfig(label=self.label, tools=self.tools,
                            inherit_context=self.inherit_context, model=self.model, thinking=self.thinking,
                            preset=self.preset, system_prompt=self.system_prompt, skills=self.skills,
                            tool_actions=self.tool_actions, tool_scopes=self.tool_scopes)
 
 
-def child_prompt(prompt: SystemPrompt | None, spec: ChildSpec) -> SystemPrompt:
-    """Child-owned prompt only. The legacy parent prompt argument is deliberately ignored.
+def child_prompt(spec: ChildSpec) -> SystemPrompt:
+    """Child-owned system prompt; task material is never system authority.
 
-    instructions is retained as historical data, not silently promoted into system
-    authority. Put task knowledge/instructions in the first user task instead.
     """
     note = (f"\n\nYou are supervised child {spec.id} with {spec.access} access. "
             "Return findings/results to your supervisor. You share the parent's workspace: "
@@ -60,14 +57,6 @@ def child_prompt(prompt: SystemPrompt | None, spec: ChildSpec) -> SystemPrompt:
     return spec.system_prompt + note
 
 
-def child_task(spec: ChildSpec) -> str:
-    """Render explicit task material once, consistently for admission and recovery.
-
-    Historical instructions remain user material, never system authority. Merely
-    rendering a record cannot start a child or make an interrupted effect replayable.
-    """
-    return ("Task materials:\n" + spec.instructions + "\n\nTask:\n" + spec.task
-            if spec.instructions else spec.task)
 
 
 def child_message_status(message: AssistantMessage) -> str:
@@ -272,7 +261,6 @@ class ChildClient:
                 "this never grants a missing parent tool or bypasses approval/read-only access. "
                 "set_system_prompt uses text and is idle-only: queued before startup or stopped metadata only; "
                 "busy changes are rejected, never restart/replay work. "
-                "Legacy instructions is first-user task material, never parent system authority. "
                 "Queue controls use text JSON: list, edit/remove/move/return, stopped recovery, "
                 "or return_prepare/return_commit/return_cancel for live queued images. "
                 "Prepare requires id/revision and returns typed images plus return_token and image_receipt; "
@@ -290,7 +278,6 @@ class ChildClient:
                                 "model": {"type": ["string", "null"], "maxLength": 256},
                                 "thinking": {"enum": [None, "off", "minimal", "low", "medium", "high", "xhigh"]},
                                 "label": {"type": "string", "maxLength": 120},
-                                "instructions": {"type": "string", "maxLength": 16000},
                                 "system_prompt": {"type": "string", "maxLength": 16000},
                                 "skills": {"type": ["array", "null"], "default": [], "maxItems": 128,
                                            "items": {"type": "string"}, "uniqueItems": True},

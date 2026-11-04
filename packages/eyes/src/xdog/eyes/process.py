@@ -84,7 +84,7 @@ def ensure_runtime(location: RuntimeLocation, *, timeout: float = 8.0) -> Runtim
                     os.ftruncate(log, 0)
                 arguments = [sys.executable, '-m', 'xdog.eyes.runtime', '--directory', str(location.directory)]
                 child = subprocess.Popen(arguments,
-                    cwd=location.cwd, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                    cwd=location.directory, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                     close_fds=True, start_new_session=True)
                 _children[str(location.directory)] = child
             finally:

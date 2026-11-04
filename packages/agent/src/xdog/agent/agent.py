@@ -46,6 +46,7 @@ from xdog.agent.compaction import (
     resolve_compaction_budget,
     summarize_compaction,
 )
+from xdog.agent.context_report import ContextReport
 from xdog.agent.core import (
     AgentConfig,
     AgentContext,
@@ -81,13 +82,12 @@ from xdog.agent.events import (
     UsageEvent,
 )
 from xdog.agent.input_queue import Delivery, QueuedInput
-from xdog.agent.messages import default_convert_to_llm, dicts_to_messages
+from xdog.agent.messages import default_convert_to_llm
 from xdog.agent.snapshots import (
     CompactionSnapshot,
     InterruptedTool,
     Snapshot,
     capture_skill_snapshots,
-    decode_legacy_snapshot,
     decode_snapshot,
     decode_snapshot_parts,
     encode_snapshot,
@@ -107,7 +107,6 @@ from xdog.ai.types import (
     AssistantMessage,
     Context,
     ImageContent,
-    Message,
     StreamOptions,
     SystemPromptBlock,
     TextContent,
@@ -293,6 +292,7 @@ class Agent:
         self._session_id = uuid.uuid4().hex
         self._run_id = ""
         self._event_sequence = 0
+        self._last_context_report: ContextReport | None = None
         self._end_emitted = False
         self._input_transform = input_transform
         self._input_settled = input_settled
@@ -526,6 +526,11 @@ class Agent:
         return self._cancel.is_set()
 
     @property
+    def last_context_report(self) -> ContextReport | None:
+        """Counts for the last actual prepared model request, not the current draft."""
+        return self._last_context_report
+
+    @property
     def stream_fn(self) -> StreamFn:
         """The stream function used by this agent."""
         return self._stream_fn
@@ -639,6 +644,10 @@ class Agent:
 
     @staticmethod
     def _combined_tools(local: tuple[AgentTool, ...], registry: McpRegistry | None) -> tuple[AgentTool, ...]:
+        from xdog.ai.utils.validation import validate_tool_schema
+        for tool in local:
+            if tool.validate_arguments is None:
+                validate_tool_schema(tool.parameters)
         remote = () if registry is None else tuple(registry.tools())
         combined = (*local, *remote)
         names = [tool.name for tool in combined]
@@ -858,7 +867,7 @@ class Agent:
                 messages = list(self._state.messages)
                 if self._transform_context is not None:
                     messages = await self._transform_context(messages)
-                converter = self._convert_to_llm or _default_convert_to_llm
+                converter = self._convert_to_llm or default_convert_to_llm
                 projected = converter(messages)
                 if inspect.isawaitable(projected):
                     projected = await projected
@@ -912,7 +921,7 @@ class Agent:
                                                output_reserve=cfg.output_reserve, safety_margin=cfg.safety_margin)
             # Arbitrary host transforms cannot safely be inverted. Accept only
             # an aligned projection; never guess which canonical data to drop.
-            projections = tuple(tuple(_default_convert_to_llm([message])) for message in original)
+            projections = tuple(tuple(default_convert_to_llm([message])) for message in original)
             plan = plan_compaction(original, context=request, budget=budget, force=not automatic,
                                    generation=self._compaction_state.generation, projections=projections,
                                    prefix_messages=prefix, options=options)
@@ -1030,8 +1039,8 @@ class Agent:
     ) -> None:
         """Validate then atomically adopt data; do not start a model or execute tools.
 
-        Versionless old snapshots retain partial-patch semantics. New snapshots
-        bind skills through this Agent's trusted manager and keep its tools,
+        Only the current versioned snapshot schema is accepted. Snapshots bind
+        skills through this Agent's trusted manager and keep its tools,
         permissions, provider and runtime resources. An optional host model
         allowlist restricts the saved model; metadata-capable adapters must also
         recognize it. Neither snapshots nor model IDs confer provider authority.
@@ -1046,37 +1055,6 @@ class Agent:
         if not self._idle_event.is_set():
             raise RuntimeError("Cannot restore during an active run")
         raw = dict(session)
-        versioned = "format" in raw or "version" in raw
-        if not versioned:
-            values = decode_legacy_snapshot(raw).values
-            model = values.get("model") or self._state.model
-            self._validate_restored_model(model, allowed_models)
-            # All data is validated before changing the Agent. Legacy composed
-            # skill prefixes cannot be separated reliably; no fidelity invented.
-            messages = (tuple(dicts_to_messages(values["messages"] or []))
-                        if "messages" in values else self._state.messages)
-            prompt = values.get("system_prompt", self._base_system_prompt)
-            if isinstance(prompt, list):
-                prompt = tuple(SystemPromptBlock(text=b["text"], cache=b.get("cache", False)) for b in prompt)
-            options = replace(self._options, **{key: values[key] for key in
-                              ("thinking", "temperature", "max_tokens") if key in values})
-            additions = tuple(slug for slug in dict.fromkeys(default_skills)
-                              if slug not in self._active_skill_slugs)
-            defaults = self._restore_default_sessions(additions)
-            combined = {**self._resolved_skills, **{skill.slug: skill for skill in defaults}}
-            fixed = _skill_preamble([skill for skill in combined.values() if not skill.expires_after_turn])
-            self._resolved_skills = combined
-            self._active_skill_slugs = (*self._active_skill_slugs, *(skill.slug for skill in defaults))
-            self._fixed_preamble = fixed
-            self._base_system_prompt = prompt
-            self._options = options
-            self._update_state(messages=messages, model=model)
-            self._recompose_system_prompt()
-            if "messages" in values:
-                self._unconfirmed_tools.clear()
-                self._compaction_state = CompactionSnapshot()
-            return
-
         candidate = decode_snapshot(raw, custom_validators=self._custom_message_validators)
         self._restore_candidate(candidate, tuple(raw["options"]), allowed_models=allowed_models,
                                 default_skills=default_skills)
@@ -1733,12 +1711,16 @@ class Agent:
             finally:
                 self._compacting = False
 
+        def context_reported(report: ContextReport) -> None:
+            self._last_context_report = report
+
         config = AgentLoopConfig(
+            on_context_report=context_reported,
             tool_execution=self._tool_execution,
             before_tool_call=self._before_tool_call,
             tool_execution_guard=self._tool_execution_guard,
             after_tool_call=self._after_tool_call,
-            convert_to_llm=self._convert_to_llm or _default_convert_to_llm,
+            convert_to_llm=self._convert_to_llm or default_convert_to_llm,
             transform_context=skill_context,
             on_model_request=model_requested,
             prepare_request=prepare_request if self._compaction_config.auto else None,
@@ -1949,12 +1931,3 @@ class Agent:
                 data = self._snapshot_data(run_active=active)
                 snapshot = self._emit(SnapshotEvent(snapshot_json=json.dumps(data, ensure_ascii=False)))
                 await stream.send(snapshot)
-
-
-# ---------------------------------------------------------------------------
-# Default converter
-# ---------------------------------------------------------------------------
-
-def _default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:
-    """Compatibility entry point; default projection policy lives in messages."""
-    return default_convert_to_llm(messages)

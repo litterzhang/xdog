@@ -1,4 +1,4 @@
-"""Tests for transcript store (formerly SessionManager)."""
+"""Tests for transcript store (formerly TranscriptStore)."""
 import pytest
 from xdog.claw.core.persistence.transcript_store import TranscriptStore
 

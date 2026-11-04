@@ -150,7 +150,7 @@ async def test_shutdown_releases_registry_and_reopen_retains_main_tasks_without_
                                              config=AgentConfig(model='test/model'),
             tools=get_default_tools(tmp_path), tool_ctx={'fs_workspace': str(tmp_path)}),
             session_data=manager.load_session(identifier), session_manager=manager,
-            settings=SettingsManager(global_path=tmp_path / 'settings.json'), tool_repo=None, bash=None,
+            settings=SettingsManager(global_path=tmp_path / 'settings.json'), tool_repo=None,
             working_dir=tmp_path, permissions=PermissionManager('ask'))
         await successor.send_message('Read current state')
         next_host = successor.capabilities.get('goal')

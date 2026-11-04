@@ -409,32 +409,18 @@ async def test_reassembly_preserves_turn_lifecycle_and_does_not_rearm_defaults(m
         await app.aclose()
 
 
-async def test_legacy_restore_keeps_partial_patch_and_pending_turn_lifetime(monkeypatch, tmp_path):
-    for slug, scope in [("guard", "session"), ("once", "turn")]:
-        path = tmp_path / slug
-        path.mkdir()
-        (path / "SKILL.md").write_text(f"---\nname: {slug}\nmetadata:\n  scope: {scope}\n---\nRULE-{slug}")
-    manager = SkillRepo(builtin=False, packaged={}).register(directory=tmp_path, name="shared")
-    provider = Provider("app", skill="guard")
+async def test_assembly_rejects_unversioned_restore_without_mutating_owner(monkeypatch, tmp_path):
+    provider = Provider('app')
     app, _ = sets(monkeypatch, provider)
     await app.start(object())
     assembly = CapabilityAssembly(app)
-    target = Agent(lambda *_: pytest.fail("No model calls"), skills=manager, active_skills=["once"])
+    target = Agent(lambda *_: pytest.fail('No model calls'))
     try:
-        assembly.restore_agent(target, {"system_prompt": "LEGACY_BASE"})
-        assert target.active_skills == ("once", "guard")
-        assert {item["slug"]: item["lifecycle"] for item in target.dump()["skills"]} == {
-            "once": "pending",
-            "guard": "active",
-        }
-        assert "LEGACY_BASE" in str(target.state.system_prompt)
         before = target.dump()
-        (tmp_path / "guard" / "SKILL.md").unlink()
-        target.set_active_skills(["once"])
-        before = target.dump()
-        with pytest.raises(ValueError):
-            assembly.restore_agent(target, {"system_prompt": "MUST_NOT_ADOPT"})
-        assert target.dump() == before
+        for patch in ({}, {'system_prompt': 'MUST_NOT_ADOPT'}, {'messages': []}):
+            with pytest.raises(ValueError):
+                assembly.restore_agent(target, patch)
+            assert target.dump() == before
     finally:
         await target.aclose()
         await app.aclose()

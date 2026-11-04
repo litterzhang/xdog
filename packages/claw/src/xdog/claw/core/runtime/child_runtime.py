@@ -40,7 +40,6 @@ from xdog.agent.children import (
     ChildToolProgress,
     child_message_status,
     child_prompt,
-    child_task,
 )
 from xdog.agent.core import AgentMessage, AgentTool, ModelStreamFn
 from xdog.agent.cross_loop import settle_on, submit_remote
@@ -175,10 +174,10 @@ class ClawChildRuntime:
         self._admission_pauses = 0
         from xdog.agent.child_queue import recovery_from_dicts
         for record in records or ():
-            config = ChildConfig.from_record(record.get("config", {}))
+            config = ChildConfig.from_dict(record.get("config", {}))
             spec = ChildSpec(id=record["id"], task=record["task"], access=record["access"],
                              inherit_context=config.inherit_context, label=config.label,
-                             instructions=config.instructions, tools=config.tools, model=config.model,
+                             tools=config.tools, model=config.model,
                              thinking=config.thinking, preset=config.preset,
                              images=images_from_dicts(record.get('task_images', [])),
                              system_prompt=config.system_prompt, skills=config.skills,
@@ -371,7 +370,7 @@ class ClawChildRuntime:
                 raise ValueError(self.diagnostic)
             self._admissions.add(operation)
         spec = ChildSpec(id=uuid.uuid4().hex[:12], task=task, access=access, inherit_context=False,
-                        label=config.label, instructions=config.instructions, tools=config.tools,
+                        label=config.label, tools=config.tools,
                         model=config.model, thinking=config.thinking, preset=config.preset, images=images,
                         system_prompt=config.system_prompt, skills=config.skills,
                              tool_actions=config.tool_actions, tool_scopes=copy.deepcopy(config.tool_scopes))
@@ -500,7 +499,7 @@ class ClawChildRuntime:
         from xdog.agent.child_model import ChildModel
         model = ChildModel(id=agent.state.model, options=agent.options, context_window=agent.context_window,
                            max_prompt_tokens=agent.max_prompt_tokens, supports_tool_calls=agent.supports_tool_calls)
-        return model.prompt(child_prompt("", child.spec))
+        return model.prompt(child_prompt(child.spec))
 
     def _capture(self, child: _Child) -> None:
         assert child.agent is not None
@@ -625,10 +624,8 @@ class ClawChildRuntime:
             if request is not None:
                 # Runtime clients, tools, authority and current model metadata are injected by the host.
                 if child.session_state is None:
-                    # Explicit bounded compatibility: no unknown skill/compaction state is invented.
-                    agent.replace_messages(list(child.transcript))
-                else:
-                    agent.restore_parts(child.session_state, child.transcript, allowed_models=(agent.state.model,))
+                    raise ValueError("Child continuation requires a current safe snapshot; create a new child")
+                agent.restore_parts(child.session_state, child.transcript, allowed_models=(agent.state.model,))
                 agent.set_system_prompt(self._updated_prompt(child, agent))
             else:
                 if isinstance(agent.stream_fn, ModelStreamFn):
@@ -855,7 +852,7 @@ class ClawChildRuntime:
             with self._lock:
                 child.status = "running"
             self._notify(child)
-            prompt = child_task(child.spec) if request is None else request.content
+            prompt = child.spec.task if request is None else request.content
             images = child.spec.images if request is None else request.images
             stream = await child.agent.prompt(prompt, images=list(images))
             async for event in stream:
@@ -1039,7 +1036,7 @@ class ClawChildRuntime:
         if child.initial_state not in {'pending', 'uncertain'} or child.status not in {
                 'failed', 'canceled', 'timed-out', 'interrupted'}:
             return None
-        return QueuedInput('initial-task:' + child.spec.id, child_task(child.spec), 'follow_up',
+        return QueuedInput('initial-task:' + child.spec.id, child.spec.task, 'follow_up',
                            images=child.spec.images)
 
     @classmethod
@@ -1357,62 +1354,6 @@ class ClawChildRuntime:
             result['accepted_input'] = receipt
         return result
 
-    @staticmethod
-    def _legacy_readonly(child: _Child) -> tuple[ChildSpec, dict[str, dict[str, Any]]]:
-        """Explicit legacy handoff: only proven completed history, with a narrowed read-only grant."""
-        from xdog.agent.compaction import SUMMARY_TEMPLATE
-        from xdog.ai.types import ToolResultMessage
-        if (child.spec.access != "read-only" or child.spec.inherit_context or child.spec.skills
-                or child.spec.skills is None or not child.transcript):
-            raise ValueError("Legacy child has unknown authority/skill state; explicit reconciliation required")
-        typed = decode_snapshot_messages(encode_snapshot_messages(child.transcript))
-        last = typed[-1]
-        if not isinstance(last, AssistantMessage) or last.stop_reason not in {"stop", "length"} or last.error_message:
-            raise ValueError("Legacy child has no confirmed completion boundary; no automatic replay")
-        prefix = SUMMARY_TEMPLATE.partition("{summary}")[0]
-        for message in typed:
-            if not isinstance(message, (UserMessage, AssistantMessage, ToolResultMessage)):
-                raise ValueError("Legacy child has unknown context state; explicit reconciliation required")
-            content = message.content
-            plain = content if isinstance(content, str) else "".join(
-                part.text for part in content if isinstance(part, TextContent))
-            if isinstance(message, UserMessage) and plain.startswith(prefix):
-                raise ValueError("Legacy compacted history lacks its summary metadata; "
-                                 "explicit reconciliation required")
-        effective = dict(child.effective)
-        model = effective.get("model") or child.spec.model
-        if not isinstance(model, str) or not model:
-            raise ValueError("Legacy child lacks a verified model binding; no fallback")
-        successful = {message.tool_call_id for message in typed
-                      if isinstance(message, ToolResultMessage) and not message.is_error}
-        ceilings: dict[str, dict[str, Any]] = {}
-        actions: dict[str, set[str]] = {}
-        original_actions = dict(child.spec.tool_actions)
-        for message in typed:
-            if not isinstance(message, AssistantMessage):
-                continue
-            for call in message.content:
-                if not isinstance(call, ToolCall) or call.id not in successful:
-                    continue
-                action = call.arguments.get("action")
-                if call.name == "filesystem":
-                    if (action not in {"read", "ls", "grep", "find"}
-                            or call.name in original_actions and action not in original_actions[call.name]):
-                        continue
-                    actions.setdefault(call.name, set()).add(action)
-                elif call.name != "current_time" or call.name in original_actions:
-                    continue
-                if child.spec.tools is not None and call.name not in child.spec.tools:
-                    continue
-                schema = ceilings.setdefault(call.name, {"type": "object", "enum": []})
-                if call.arguments not in schema["enum"]:
-                    schema["enum"].append(copy.deepcopy(call.arguments))
-        spec = replace(child.spec, tools=tuple(ceilings), skills=(), model=model,
-                       tool_scopes={name: scope for name, scope in child.spec.tool_scopes.items() if name in ceilings},
-                       thinking=effective.get("thinking", child.spec.thinking),
-                       tool_actions=tuple((name, tuple(sorted(values))) for name, values in actions.items()))
-        spec.config()  # All new settings still pass the SDK's normal data validation on capture.
-        return spec, ceilings
 
     async def _continue(self, child: _Child, text: str, images: tuple[ImageContent, ...],
                         alive: Callable[[], bool]) -> None:
@@ -1426,9 +1367,9 @@ class ClawChildRuntime:
             if child.status != "completed" or child.queue_uncertain:
                 raise ValueError("Child is not running or safely completed; "
                                  "inspect/reconcile interrupted effects, no replay")
-            legacy = self._legacy_readonly(child) if child.session_state is None else None
-            if child.session_state is not None:
-                decode_snapshot_parts(child.session_state, child.transcript).require_resumable()
+            if child.session_state is None:
+                raise ValueError('Child continuation requires a current safe snapshot; create a new child')
+            decode_snapshot_parts(child.session_state, child.transcript).require_resumable()
             if (not isinstance(text, str) or not (text.strip() or images)
                     or len(text.encode("utf-8")) > 16000):
                 raise ValueError("Invalid child continuation input; expected nonempty text/images within 16000 bytes")
@@ -1445,14 +1386,6 @@ class ClawChildRuntime:
             record.update(status="interrupted", settling=False, queue_uncertain=True,
                           undelivered_inputs=encoded,
                           error="Continuation admission may be unconfirmed; inspect, never automatically replay.")
-            if legacy is not None:
-                spec, ceilings = legacy
-                note = ("Explicit legacy read-only continuation: retained paired history; tools restricted to "
-                        "previously successful read-only argument sets. "
-                        "Unknown skill/compaction state is not inferred.")
-                record.update(config=spec.config().to_dict(), tool_schemas=copy.deepcopy(ceilings),
-                              continuation_note=note)
-                child.spec, child.tool_schemas, child.continuation_note = spec, ceilings, note
             original_pending = child.undelivered
             child.undelivered = pending
             child.settling, child.queue_work = True, True

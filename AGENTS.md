@@ -155,7 +155,7 @@ Unknown follows Agent's native-schema behavior. Skill selection errors propagate
 publishing host selection. Retired resource-loader and prompt signatures have no aliases.
 See `docs/coding-system-prompt.md`. Permissions belong in the coding client's pre-tool hook, not in the generic agent runtime. Preserve the default fail-closed behavior: read-only calls may run automatically, mutating calls require approval, and unattended execution may mutate only when `allow-all` was explicitly selected. Permission gates are not an OS sandbox.
 
-Coding depends on `xdog-skills` by default (the skills extra remains compatible).
+Coding depends on `xdog-skills` by default; there is no redundant skills extra.
 Installed capability discovery provides the native /goal commands, actual Goal
 AgentTool and discoverable skill without an enable switch. Availability does not
 create a Goal or worker. Session capability ports expose exact inbox namespace,
@@ -252,7 +252,13 @@ staged submissions retain original IDs/images over ACK loss; local editable
 unsent drafts remain process-memory state, not an implicit plaintext disk spool.
 See `docs/claw-assistant-core-requirements.json` for exact acceptance status.
 
-Eyes callbacks use thin ACP intake into the application-owned Core Inbox as canonical external input; Goal reminders also use ACP enqueue into the same canonical automatic input path. Each group has one logical main Agent and one execution route; session files are context/history storage, never Goal ownership or event destinations. Both paths use the same GroupController and current AgentSession. A group runtime owns its workspace, tools, memory, prompt builder, transcript store, one active cached agent session and optional capability bindings; Goal owns its separate domain storage. Transcripts are JSONL with a `sessions.json` index; `SessionManager` is a compatibility alias for `TranscriptStore`, not an LRU multi-session manager.
+Eyes callbacks use thin ACP intake into the application-owned Core Inbox as canonical external input; Goal reminders also use ACP enqueue into the same canonical automatic input path. Each group has one logical main Agent and one execution route; session files are context/history storage, never Goal ownership or event destinations. Both paths use the same GroupController and current AgentSession. A group runtime owns its workspace, tools, memory, prompt builder, transcript store, one active cached agent session and optional capability bindings; Goal owns its separate domain storage. Transcripts are JSONL with a `sessions.json` index; Only `TranscriptStore` is exported; the old `SessionManager` alias is removed.
+TUI history is a read-only group timeline of canonical sessions, including session
+separators, handoffs and compaction summaries. Archived contexts never restore
+Agents, permissions or tool/skill selections; usage and controls remain current-session
+bound. Rotation completions invalidate the view and trigger an authoritative handshake,
+not activation of the session named by an event. Reconnect also reloads same-session history.
+
 
 Prompt construction intentionally separates a cacheable static prefix from mutable workspace, memory and environment content.
 The fixed prefix is only host/identity/context contracts; coding/style/task mandates
@@ -261,11 +267,28 @@ native models get no duplicate textual catalog. Text-only inspection remains fil
 by actual selection and input permissions. All four workspace identity/persona/user/
 instruction files have packaged defaults, used only for missing files at group creation
 or onboarding; explicit generated content is supported without an initialization model
-call. Existing custom files are preserved. See `docs/claw-system-prompt.md`. Goal facts are queried through the optional capability, never a hardcoded per-turn summary. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
+call. Existing custom files are preserved. See `docs/claw-system-prompt.md`. Goal facts are queried through the optional capability, never a hardcoded per-turn summary. Compaction flushes durable memory, summarizes through the LLM, archives the transcript, then replaces older history. Context-rotation handoff is separate: exact short excerpts need no summary call;
+large handoffs use a compact dedicated prompt and reject expanded/oversized output.
+A newly accepted note replaces duplicate excerpts; later raw deltas remain until
+merged. Memory maintenance, source references, original JSONL and owner fences remain.
+ Memory uses vector+BM25 search when optional dependencies initialize and falls back to keyword search otherwise.
 
 Claw explicitly creates its own Agent `ToolRepo` and registers actual Claw-specific
 tools there. Domain imports must not mutate a process-global tool registry;
 Agent builtin tool instances are supplied by the SDK, not registered again by Claw.
+
+XHS uses the optional `xdog-claw[xhs]` Python dependency with the modified
+`xiaohongshu-cli[browser]==0.6.4+xdog.1` fork. The root uv source currently selects
+its editable sibling checkout; publish/pin an accessible fork before CI/release.
+There is no standalone HTTP backend. SDK adapter/login remain under channels/xhs;
+imports are lazy, credentials group-scoped, calls owned off-loop and writes single-attempt.
+Explicit QR login uses the public qrcode_login result in a short-lived same-env
+process with isolated candidate cookies. It retains the caller's CLOAKBROWSER_CACHE_DIR
+for vendor license/binary reuse. Browser control belongs only to the SDK's Python
+CloakBrowser layer, fixed headless=False/humanize=True; no Claw Xvfb/browser host or
+private QR helper remains. Gateway polling never launches login. Owner fences,
+independent account verification and unknown-delivery receipts remain unchanged.
+See docs/claw-xhs-sdk.md.
 
 Claw starts a private Unix ACP endpoint by default. `acp_socket_path` or
 `gateway start --acp-socket` overrides its path. `acp/backend.py` implements the shared Agent ACP
@@ -311,10 +334,10 @@ report/attempt acceptance protocol or Goal-owned child scheduling remains. Skill
 instructions explain that workflow; no subagent capability is required.
 
 Goal owns groups/<id>/goals/registry.sqlite3 and workspace/.xdog/goals/<goal-id>/;
-old journal.sqlite3/goals.json stay untouched and are explicitly reported, never
+old journal.sqlite3/goals.json stay untouched and are never probed or decoded; they are not
 silently upgraded or used to replay old worker effects. Native user commands and
 model actions share the actual owner-bound service; automatic inputs cannot release
-user/host waits or user pauses. Task state exists only in tasks/*.json; views are
+user waits or user pauses. Task state exists only in tasks/*.json; views are
 derived. Goal creates only its own optional Eyes task observation; stop/pause/clear
 never cancels unrelated observers, accepted input or child work. Shutdown settles
 actual operations and ACP/observation resources before releasing storage. See
@@ -385,7 +408,7 @@ interrupted, never automatic side-effect replay. Persisted inbox namespace,
 project/branch and stable IDs make explicit enqueue ACK-loss recovery safe;
 standard prompt outcome-unknown is never blindly resent. Source labels/evidence
 are untrusted, not identities or permissions. New canonical input is
-`xdog.session_input.v1`; old `xdog.external_event.v1` is historical codec only.
+`xdog.session_input.v1`; the retired external-event codec and its history projection are removed.
 
 Eyes has a reusable user-local daemon, normally under
 `~/.local/share/xdog/eyes` (honoring XDG_DATA_HOME), and a standalone CLI.
@@ -395,7 +418,7 @@ capability registration ensures daemon availability without creating observation
 Consumers use the public CLI or registered tool, not private Python control APIs.
 There is only a daemon process host: the old project/cwd runtime and embedded
 ObserverService are removed. Explicit directory overrides isolate the same daemon
-implementation; the retained control-wire cwd is strictly its daemon directory.
+implementation; control protocol v2 names only the daemon directory, without a cwd alias.
 The control plane becomes ready independently of slow target recovery. Protocol
 compatibility and journal format checks are separate; incompatible old state is
 reported, not migrated, erased, or replayed. Ordinary cancellation stops the
@@ -453,3 +476,35 @@ and the simplified baseline `docs/goal-simple-{design.md,requirements.json}`.
 - Skills with session scope belong in the cacheable prompt prefix; turn-scoped skill bodies are messages so removing them does not invalidate that prefix.
 - Flow script workspace checks are audit/confinement guards against accidental access, not a hostile-code sandbox.
 - Do not infer current capabilities from old module names or protocol adapters; check package registration and public exports.
+
+- Model tool/parallel/streaming/structured-output declarations are tri-state;
+  unreported metadata is `None`, never invented support or an automatic denial.
+  Pure request preflight rejects explicit contradictions before auth/IO. Typed
+  `ModelFailure` facts classify explicit codes/status/types, not prose, permissions,
+  safe retries, fallback routes or tool effects.
+- Agent `last_context_report`/`inspect_context` are count-only final-request
+  estimates, with trusted budgets supplied explicitly and no prompt retention.
+  Native tool schemas use offline Draft 2020-12 validation; MCP retains its own
+  dialect registry. Typed tool failures/artifact refs add no storage or authority.
+- Flow checkpoint v1 pins graph/defaults and previously computed nodes, including
+  reopened loop iterations. Uncomputed node repairs remain possible; incompatible
+  or unversioned snapshots are rejected, with no silent migration/replay. External
+  module versions and checkpoint provenance remain host responsibilities.
+
+- Current SDK snapshots accept only canonical versioned fields. No unversioned
+  partial restore, duplicate prompt/options aliases or historical external-event
+  codec is provided. Flow real/stub/codegen inheritance uses the same snapshot
+  contract. Old files are not migrated or rewritten. Native generation requires
+  explicit endpoint metadata, not inference from old cached adapter labels.
+
+- Retired application interfaces have no aliases: Claw uses TranscriptStore;
+  Coding has no per-session bash handle, old keybinding manager or singleton
+  execution wrapper. Both new and saved ChildConfig use the same schema; old
+  instructions/budget/inheritance fields and snapshot-less child continuation
+  are rejected. Access state requires explicit current fields, with no plan codec.
+- Coding Inbox uses current version-3 records only, without legacy_order or old
+  approval-state migration. Both hosts reject missing execution metadata; Claw
+  never ALTERs an older input schema or reconstructs a missing session catalog.
+  Goal requires current core fields, preserving optional question metadata as
+  absent when unrecorded, without wait(host) or legacy-store
+  probes. These failures never grant authority, run models or replay effects.

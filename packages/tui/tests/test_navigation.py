@@ -6,7 +6,7 @@ import time
 from xdog.tui.components.navigation_panel import NavigationPanel
 from xdog.tui.keys import KeyEvent
 from xdog.tui.navigation import NavigationEntry, NavigationFeed, NavigationSnapshot, NavigationWorker, navigation_page
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 
 def test_search_applies_to_all_entries_not_just_first_page_and_pages_are_bounded():
@@ -69,7 +69,7 @@ def test_feed_ignores_stale_receipt_and_panel_search_tree_paste_and_tiny_layout(
     for budget in (0, 1, 2, 4, 12):
         panel.set_render_budget(budget)
         assert len(panel.render(20)) <= budget
-        assert all(visible_width(row) <= 20 for row in panel.render(20))
+        assert all(string_width(row) <= 20 for row in panel.render(20))
     panel.handle_input(KeyEvent("/"))
     panel.handle_paste("query\x1b[2J")
     assert requests[-1][2] == "query"

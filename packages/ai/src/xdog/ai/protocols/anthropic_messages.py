@@ -19,7 +19,9 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+from xdog.ai.capabilities import validate_model_request
 from xdog.ai.core import AuthResult, BaseProtocol
+from xdog.ai.failures import ModelCapabilityError, ModelFailure, http_failure, model_failure
 from xdog.ai.native import NativeEventStream, NativeOperation, NativeResponse, ProtocolRequest
 from xdog.ai.protocols._message_builder import MessageBuilder
 from xdog.ai.protocols._message_stream import message_stream
@@ -394,6 +396,7 @@ async def _stream_impl(
                         error=output.error_message,
                         stop_reason="error",
                         message=output.snapshot(),
+                        failure=http_failure(response.status_code, error_body),
                     )
                     return
 
@@ -431,6 +434,7 @@ async def _stream_impl(
             error=str(exc),
             stop_reason="error",
             message=output.snapshot(),
+            failure=model_failure(exc, partial=started),
         )
         return
 
@@ -442,6 +446,7 @@ async def _stream_impl(
             error=output.error_message,
             stop_reason="error",
             message=output.snapshot(),
+            failure=ModelFailure('protocol', partial=started),
         )
         return
 
@@ -670,6 +675,7 @@ def _handle_sse_event(
             error=error_msg,
             stop_reason="error",
             message=output.snapshot(),
+            failure=model_failure(code=error_data.get('type'), partial=bool(output.snapshot().content)),
         ))
 
     return results
@@ -686,6 +692,9 @@ def stream(
     auth: AuthResult,
 ) -> EventStream[AssistantMessage]:
     """Stream a response using the Anthropic Messages API protocol."""
+    validate_model_request(model, context, options)
+    if model.supports_streaming is False:
+        raise ModelCapabilityError("streaming")
     return message_stream(lambda: _stream_impl(model, context, options, auth))
 
 

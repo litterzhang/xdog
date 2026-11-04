@@ -47,8 +47,7 @@ async def test_navigation_preserves_inventory_or_rejects_claw_route_switch(tmp_p
             store._save_catalog()
             store.save_active_tools(target, ('missing', 'current_time'))
             selected = owner.agent.active_tool_selection
-            with pytest.raises(ValueError, match='read-only'):
-                await asyncio.to_thread(runtime.navigate_session, 'resume', target, '', -1, original)
+            assert not hasattr(runtime, "navigate_session")
             assert runtime._active_session is owner and owner.agent.active_tool_selection == selected
             assert store.get_active_session('main').session_id == original
             assert store.get_active_tools(target) == ('missing', 'current_time')  # Read-only archive, never adopted.

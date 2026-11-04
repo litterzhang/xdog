@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from xdog.ai.vendors.copilot import CopilotVendor
 
+from xdog.ai.capabilities import validate_model_request
 from xdog.ai.core import AuthResult, BaseProtocol, BaseProvider
 from xdog.ai.native import NativeEventStream, NativeOperation, NativeResponse, ProtocolRequest
 from xdog.ai.types import (
@@ -112,6 +113,7 @@ class CopilotProvider(BaseProvider):
 
         resolved = self._resolve(model_name)
         opts = options or StreamOptions()
+        validate_model_request(resolved, context, opts)
         result_future: asyncio.Future[AssistantMessage] = asyncio.get_event_loop().create_future()
 
         async def _generate() -> AsyncIterator[AssistantMessageEvent]:
@@ -155,10 +157,9 @@ class CopilotProvider(BaseProvider):
 
     @staticmethod
     def _native_protocol_ids(model: Model) -> tuple[str, ...]:
-        supported = model.supported_generation_protocols
-        if supported is not None:
-            return supported
-        return () if model.model_type == "embeddings" else (model.supported_protocols or (model.api,))
+        # Native generation requires an explicit endpoint declaration, not old
+        # cache fields or the normalized adapter's protocol label.
+        return model.supported_generation_protocols or ()
 
     def _native_protocol(self, model: Model, request: ProtocolRequest) -> BaseProtocol:
         if request.protocol not in self._native_protocol_ids(model):

@@ -16,8 +16,9 @@ import pprint
 import re
 import string
 import textwrap
+from dataclasses import asdict
 
-from xdog.flow.checkpoint import render_checkpoint_interceptor
+from xdog.flow.checkpoint import checkpoint_contract, render_checkpoint_contract, render_checkpoint_interceptor
 from xdog.flow.frontier import build_frontier_spec, render_frontier_runtime
 from xdog.flow.models import (
     IN_NODE_ID,
@@ -179,12 +180,11 @@ _SDK_RUN_AGENT = '''async def _run_agent(
         # construct this Agent. Copy before overriding: siblings may share the
         # ancestor snapshot. Model availability is checked during restore.
         _inherited = _SESSIONS.get(inherit_from) if inherit_from else None
-        if _inherited:
+        if _inherited is not None:
             inherited = dict(_inherited)
             if override_model:
                 inherited["model"] = model
-            if "format" in inherited or "version" in inherited:
-                inherited["skills"] = agent.dump()["skills"]
+            inherited["skills"] = agent.dump()["skills"]
             agent.restore(inherited)
             if override_system_prompt:
                 agent.set_system_prompt(_sys)
@@ -1245,7 +1245,8 @@ def generate(wf: WorkflowDef) -> str:
         in_node_id=repr(IN_NODE_ID),
         node_functions=node_functions,
         frontier_runtime=render_frontier_runtime(),
-        checkpoint_runtime=render_checkpoint_interceptor(),
+        checkpoint_runtime=render_checkpoint_interceptor() + '\n' + render_checkpoint_contract()
+                           + '\n_CHECKPOINT_CONTRACT = ' + pprint.pformat(checkpoint_contract(asdict(wf)), width=100),
         result_runtime=render_run_result(),
         preview_runtime=render_preview_runtime(),
         provider_init=provider_init,

@@ -157,7 +157,6 @@ class StdinBuffer:
     _original_termios: Any = field(default=None, repr=False)
     _buffer: bytearray = field(default_factory=bytearray)
     _fd: int = field(default=-1)
-    on_data: Callable[[bytes], None] | None = field(default=None, repr=False)
     max_paste_bytes: int = _DEFAULT_MAX_PASTE_BYTES
     clock: Callable[[], float] = field(default=time.monotonic, repr=False)
     _paste: bytearray | None = field(default=None, init=False, repr=False)
@@ -339,38 +338,6 @@ class StdinBuffer:
         if not data:
             self._eof = True
         return data
-
-    def read_buffered(self, timeout: float = 0.0) -> bytes:
-        """Read bytes and return them with the legacy internal byte buffer."""
-        new_data = self.read(timeout)
-        if new_data:
-            self._buffer.extend(new_data)
-        result = bytes(self._buffer)
-        self._buffer.clear()
-        return result
-
-    def read_complete(self, timeout: float = 0.0, wait: float = 0.005) -> bytes:
-        """Read bytes, briefly waiting for a complete terminal sequence."""
-        data = self.read(timeout)
-        if not data:
-            return b""
-        self._buffer.extend(data)
-        while not is_complete_sequence(bytes(self._buffer)):
-            more = self.read(wait)
-            if not more:
-                break
-            self._buffer.extend(more)
-        result = bytes(self._buffer)
-        self._buffer.clear()
-        if self.on_data is not None:
-            self.on_data(result)
-        return result
-
-    def has_data(self, timeout: float = 0.0) -> bool:
-        """Return whether stdin is readable."""
-        fd = self._fd if self._fd >= 0 else sys.stdin.fileno()
-        ready, _, _ = select.select([fd], [], [], timeout)
-        return bool(ready)
 
     @property
     def is_raw(self) -> bool:

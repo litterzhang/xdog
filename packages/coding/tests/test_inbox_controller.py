@@ -405,7 +405,7 @@ async def main():
  skills = SkillRepo().register(directory=root / 'skills', name='shared')
  session=AgentSession(agent=Agent(stream,config=AgentConfig(model='test'),skills=skills),
   session_data=manager.load_session(sys.argv[2]),session_manager=manager,
-  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_repo=None,bash=None)
+  settings=SettingsManager(global_path=root/'settings.json'),working_dir=root,tool_repo=None)
  runtime=SessionRuntime(session,bound=True);runtime.start()
  await asyncio.Event().wait()
 asyncio.run(main())

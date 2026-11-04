@@ -240,9 +240,8 @@ async def collect_result(stream_fn):
 ```
 
 Here `stream_fn` must route the qualified model (for example an adapter over
-`ai.load()`). JSON Schema objects with `type`/`properties` are validated with
-fastjsonschema; the legacy flat form `{"summary": "string"}` requires declared
-fields and permits extras. With no schema, any JSON value is accepted, including
+`ai.load()`). Result schemas use offline Draft 2020-12 JSON Schema objects; flat field/type
+maps are rejected. With no schema, any JSON value is accepted, including
 arrays/scalars/null. Validation errors return `Error: ...` so the model may fix
 and resubmit. The old `flow_output_schema` / `flow_result_sink` keys are rejected.
 
@@ -574,8 +573,8 @@ Coding/Claw expose `/readonly on|off|status` as native user controls, never mode
 extension tools. Restriction changes persist before publication and require idle
 ownership. Only explicit user release can clear read-only scope; release leaves
 ordinary permissions, MCP allow-tools gates and child access unchanged.
-Saved access/legacy planning state is decoded fail-closed, not turned into executable
-plan commands or restored tool grants. Skills/task text cannot release the scope.
+Only current, explicit saved access state is decoded. Retired planning records are
+rejected, never converted into executable commands or restored tool grants. Skills/task text cannot release the scope.
 
 SDK embedders still supply pre-tool policy. The native read-only allowlist is local
 filesystem read/ls/grep/find and current time; shell, external/extension and child
@@ -849,7 +848,7 @@ executable set. `parse_child_start()` supports explicit lexical flags without sh
 execution and preserves the task suffix. Configurations persist/restore without work
 replay. The removed `timeout`, `max_model_calls` and cumulative `max_tokens` keys
 (and CLI `--timeout`, `--calls`, `--tokens`) are rejected for new starts/presets.
-Historical child records can still be read: their old budget fields are inert and
+Saved child configurations with old budget fields are rejected and
 do not resume work or reapply a budget. These settings never provide approval, a
 second tool loop, sandboxing, automatic provider activation or model fallback.
 
@@ -1141,22 +1140,17 @@ The opt-in independent serving-SDK checks construct a content corpus using its
 published schemas and exercise real stdio/HTTP mixed-content tools. They are not
 claims of every codec, issuer or native-platform implementation being verified.
 
-### Typed empty MCP binary previews and gateway compatibility
+### Typed MCP previews
 
-`McpBlock.content_type` preserves text, image, audio, embedded text/blob and link
-identity in previews and private JSON exports. `is_binary` uses the declared type,
-not only nonempty bytes. Empty audio/image/blob payloads remain binary, display
-**0 bytes**, retain their annotations and cannot silently become draftable text.
-Genuine empty text remains text. Existing nonempty legacy blocks still decode.
+`McpBlock.content_type` is required. Text, image, audio, embedded text/blob and
+link identity remain explicit in previews and private JSON exports. `is_binary`
+uses the declared type. Empty audio/image/blob payloads remain binary, display
+**0 bytes**, retain annotations and cannot silently become draftable text.
+Genuine empty text remains text. Untyped historical blocks are rejected.
 
-Claw negotiates `mcp_content_types:1` independently. Upgraded gateway/viewer pairs
-transport explicit types through the existing checksummed, session-fenced chunks.
-For older viewers the gateway retains the legacy shape for ordinary text/nonempty
-binary data, but refuses a downgrade that would lose an empty binary's identity.
-Capability changes during a read/transfer fence commitment without replay. An
-upgraded client receiving untyped previews from an older gateway cannot infer their
-payload type from MIME/metadata or insert them; preview/private export remain
-available and the update requirement is explicit.
+Claw transports only this typed shape through its checksummed, session-fenced
+chunks. There is no older-viewer downgrade or `mcp_content_types` negotiation.
+Original session/context fences and cancellation/resource settlement remain.
 
 Typed private exports retain both an empty `data` string and its content type.
 Destination entry now retains the submitted path after its nested editor clears,
@@ -1452,7 +1446,8 @@ Claw's read-only session bridge uses `extension_session:1` and
 `extension_session_inspection:1`; terminal command-menu inspection separately uses
 `extension_command_catalog:1` and its generation. No editor/navigation/mutation
 capability or separate extension name/active-tools flag is needed. Native
-`session_name_read` and `tool_inventory_selection` controls remain independent.
+`session_name_read` remains independent; tool inventories always include current
+selection metadata, with no older snapshot format.
 Session/tree catalogs read the bound backend directly; listing them does not grant
 plugin navigation authority.
 
@@ -2355,3 +2350,47 @@ validated host context atomically to the selected input. Edits keep its original
 context, and removed/handled inputs do not append it. The model sees it only after
 actual consumption under the host's existing projection. This is data carriage,
 not a role model or a permission grant; channel identity remains a host concern.
+
+## Request inspection and explicit tool outcomes
+
+`agent.last_context_report` is an immutable count-only estimate of the last final
+prepared request (after transforms/compaction and before adapter entry). Use
+`inspect_context(context, options, model=..., budget=...)` for a pure inspection,
+or `report.with_budget(CompactionBudget(...))` with trusted limits. Counts separate
+system/placed skills, schemas, history, images and request overhead. Arbitrary
+prompt strings cannot be reliably split by skill. These are heuristic estimates,
+not provider tokenization; unknown limits are not replaced with default capacity.
+
+`AgentToolResult.from_failure(ToolFailure(...))` preserves a typed error kind and
+`not_started` / `completed` / `unknown` effect state. In-flight cancellation does
+not imply rollback or safe replay. `from_artifact(ToolArtifact(id=...), preview)`
+lets a host return a short preview plus an opaque reference to its own output;
+Agent provides neither an artifact store nor implicit retrieval/authorization.
+
+Public `agent_loop` streams own their producer: exceptions reach both iteration
+and `result()`, and explicit `aclose()` cancels/joins it. Breaking event iteration
+alone does not cancel application execution. Streams created by `Agent.prompt`
+retain the Agent's existing ownership. Capability assembly supplemental kwargs
+are typed by `AgentOptions`; tools and skills remain explicit additive repos.
+
+### Canonical snapshots only
+
+`dump()` emits one versioned schema: `base_system_prompt`, nested `options`, and
+explicit history/skill/compaction metadata. `restore()` and `restore_parts()`
+accept only that current contract. There is no unversioned partial-patch restore,
+legacy decoder, duplicate top-level prompt/options aliases or automatic migration.
+Use explicit setters for runtime updates; a failed restore is atomic and never
+starts a model/tool. The retired external-event codec and private default-converter
+aliases are removed; external inputs use `xdog.session_input.v1`. Current worker
+provider catalogs always carry a registration identity, on startup and updates.
+
+### Repository-wide retired APIs
+
+Only current ChildConfig fields are accepted for both new admission and persisted
+records. `instructions`, old budget fields, historical inheritance and
+`ChildConfig.from_record` are removed. `child_prompt(spec)` takes no ignored parent
+prompt, and there is no separate `child_task` prefix helper. A current safe
+snapshot is required for completed-child continuation. Delegated tool schemas are
+advertised exactly as captured; whole-object enums are not approximated into
+property combinations. AccessState does not decode planning records or infer a
+writable scope from missing saved metadata.

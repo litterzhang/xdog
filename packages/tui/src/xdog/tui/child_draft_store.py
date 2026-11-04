@@ -192,7 +192,14 @@ class ChildDraftStore:
                                          'no operation admitted')
                     time.sleep(min(0.01, remaining))
             try:
-                yield fd
+                # A directory opened before waiting may retain an old listing
+                # snapshot (e.g. on Btrfs). Open fresh AFTER acquiring the lock,
+                # relative to the pinned inode, so admission sees prior commits.
+                current = os.open('.', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    yield current
+                finally:
+                    os.close(current)
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:

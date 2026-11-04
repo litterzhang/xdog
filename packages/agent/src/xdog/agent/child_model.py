@@ -119,7 +119,7 @@ class ChildModel:
                     raise ValueError("Child image context requires advertised model metadata; no text fallback")
                 if not isinstance(metadata, Model):
                     raise ValueError("Invalid child image model metadata; no request")
-                if metadata.model_type != "chat" or not metadata.supports_streaming:
+                if metadata.model_type != "chat" or metadata.supports_streaming is False:
                     raise ValueError("Child image context requires a streaming chat model")
                 validate_model_images(images, metadata)
                 if isinstance(original, ModelStreamFn) and original.resolve_model(model) != metadata:
@@ -168,7 +168,7 @@ def resolve_child_model(stream: StreamFn, parent: str, options: StreamOptions, c
                        else None)
     switched = selected != (parent_metadata.id if parent_metadata is not None else parent)
     if config.model is not None and metadata is not None:
-        if metadata.model_type != "chat" or not metadata.supports_streaming:
+        if metadata.model_type != "chat" or metadata.supports_streaming is False:
             raise ValueError("Selected child model is not a streaming chat model")
         if metadata.context_window <= 0:
             raise ValueError("Selected child model has no advertised context limit")

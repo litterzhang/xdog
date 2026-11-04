@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from xdog.tui.components.extension_command import ExtensionCommand
 from xdog.tui.components.messages import Transcript
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII='
 
@@ -19,7 +19,7 @@ def test_command_artifact_is_system_source_not_tool_or_model_input_and_images_ar
     assert component.result['details'] is False and len(component._images) == 1
     for width in (1, 24, 80):
         rows = component.render(width)
-        assert all(visible_width(row) <= width for row in rows)
+        assert all(string_width(row) <= width for row in rows)
         assert PNG not in '\n'.join(rows) and '\x1b]52' not in '\n'.join(rows)
     component.set_expanded(True)
     assert '[false,0,null]' in '\n'.join(component.render(80))

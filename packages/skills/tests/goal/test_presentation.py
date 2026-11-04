@@ -31,7 +31,7 @@ def test_empty_goal_offers_only_explicit_creation_or_history():
     text = format_status({'current': None, 'legacy_storage': ['/private/goals.json']})
     assert 'No current Goal' in text
     assert '/goal create <outcome>' in text and '/goal history' in text
-    assert 'Legacy storage: 1 retained unchanged' in text
+    assert 'Legacy storage' not in text
     assert '/private' not in text
     assert 'started' not in text and 'Tasks:' not in text
 
@@ -245,18 +245,3 @@ def test_completed_current_without_next_hint_is_not_an_empty_current_binding():
     assert 'Status: completed' in text
     assert 'No current Goal' not in text
     assert 'Next:' not in text  # Do not invent a lifecycle operation.
-
-
-@pytest.mark.parametrize('view', ['status', 'change'])
-def test_waiting_host_overrides_stale_work_hint_without_claiming_recovery(view):
-    data = facts('waiting', 'host')
-    data['goal'] = data['current']
-    data['current']['reason'] = '等待核对原执行结果'
-    before = deepcopy(data)
-    text = format_status(data) if view == 'status' else format_change('activate', data)
-    assert 'Status: waiting | wait_for: host' in text
-    assert 'Reason: 等待核对原执行结果' in text
-    assert 'Next: waiting for actual host recovery; no automatic retry.' in text
-    assert 'main_agent_work' not in text
-    assert 'Status: active' not in text
-    assert data == before

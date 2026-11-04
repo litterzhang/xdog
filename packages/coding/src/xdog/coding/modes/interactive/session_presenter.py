@@ -303,9 +303,9 @@ class SessionPresenter:
                     "\n".join(part.text for part in message.content if isinstance(part, TextContent)),
                     is_error=message.is_error,
                 )
-            elif isinstance(message, CustomAgentMessage) and message.type in {TYPE, "xdog.external_event.v1"}:
+            elif isinstance(message, CustomAgentMessage) and message.type == TYPE:
                 try:
-                    value = self._historical_input(message)
+                    value = decode_input(message.data)
                 except (ValueError, TypeError):
                     self.log.add_system("External input · invalid historical record; no execution/replay")
                     continue
@@ -324,19 +324,3 @@ class SessionPresenter:
                 self._show(record)
         self._render_inbox()
         self._replayed = tuple(component for component in self.log.children if component not in before)
-
-    @staticmethod
-    def _historical_input(message: CustomAgentMessage) -> SessionInput:
-        if message.type == TYPE:
-            return decode_input(message.data)
-        from xdog.agent.external_event import validate
-
-        data = validate(message.data)
-        return SessionInput(
-            data["id"],
-            "acp",
-            "legacy external event: " + data["registration_id"],
-            data["instruction"],
-            tuple(data["events"]),
-            {"route_id": data["route_id"], "delivery_ids": data["delivery_ids"]},
-        )

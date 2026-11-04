@@ -68,3 +68,36 @@ async def test_outbox_recovery_does_not_repeat_or_replace_unknown_send(tmp_path)
             await store.reminder(goal, {'id': 'stale'})
     finally:
         await store.close()
+
+
+async def test_v2_optional_question_metadata_does_not_rewrite_or_block_completed_history(tmp_path):
+    import hashlib
+    import json
+
+    from xdog.skills.goal.codec import json_text
+
+    path = tmp_path / 'data/registry.sqlite3'
+    owner = Owner('owner', tmp_path)
+    store = await GoalStore.open(path, owner)
+    initial = Goal('one', 'Title', 'Outcome')
+    await store.put(initial, expected_version=0)
+    goal = replace(initial, status='completed', version=2)
+    await store.put(goal, expected_version=1)
+    await store.close()
+    with sqlite3.connect(path) as db:
+        for table in ('goals', 'revisions'):
+            for rowid, wire in db.execute(f'SELECT rowid,payload FROM {table}').fetchall():
+                payload = json.loads(wire)
+                for name in ('question', 'impact', 'resume_when'):
+                    payload.pop(name)
+                wire = json_text(payload)
+                digest = hashlib.sha256(wire.encode()).hexdigest()
+                db.execute(f'UPDATE {table} SET payload=?,digest=? WHERE rowid=?', (wire, digest, rowid))
+    before = path.read_bytes()
+    store = await GoalStore.open(path, owner)
+    try:
+        assert await store.current() == goal
+        assert await store.history(goal.id) == (initial, goal)
+        assert path.read_bytes() == before
+    finally:
+        await store.close()

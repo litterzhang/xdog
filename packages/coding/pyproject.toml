@@ -32,9 +32,6 @@ dependencies = [
     "pydantic>=2.0",
 ]
 
-[project.optional-dependencies]
-skills = ["xdog-skills>=2.5.0"]
-
 [project.urls]
 Homepage = "https://xdog.942295.xyz"
 Repository = "https://github.com/litterzhang/xdog"

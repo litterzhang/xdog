@@ -158,13 +158,15 @@ def test_selection_metadata_must_be_complete_and_match_defaults(changes):
         validate(captured, session_id='session', owner_id='owner')
 
 
-def test_legacy_inventory_stays_unknown_and_selection_races_reject_capture(monkeypatch):
+def test_incomplete_inventory_is_rejected_and_selection_races_reject_capture(monkeypatch):
     from xdog.agent.extensions import tool_inventory
     owner = agent()
     value = capture(owner, 'session', 'owner')
     legacy = {key: data for key, data in value.items() if key not in tool_inventory.SELECTION_FIELDS}
-    assert 'active_tools' not in validate(legacy, session_id='session', owner_id='owner')
-    assert 'active_tools' not in page(legacy)
+    with pytest.raises(ValueError):
+        validate(legacy, session_id='session', owner_id='owner')
+    with pytest.raises(ValueError):
+        page(legacy)
     original = tool_inventory.validate
     def change_selection(*args, **kwargs):
         copied = original(*args, **kwargs)

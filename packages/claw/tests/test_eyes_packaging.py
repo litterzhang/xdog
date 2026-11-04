@@ -110,7 +110,14 @@ def test_built_claw_metadata_optional_eyes_without_direct_croniter(artifacts, ki
     for extra, expected in (("", False), ("search", False), ("eyes", True), ("all", True)):
         assert any(value.marker.evaluate({"extra": extra}) for value in eyes) is expected
     assert not any(value.name == "croniter" for value in requirements)
-    assert set(metadata.get_all("Provides-Extra", [])) == {"search", "skills", "eyes", "acp", "all"}
+    xhs = [value for value in requirements if value.name == "xiaohongshu-cli"]
+    assert xhs and all(
+        str(value.specifier) == "==0.6.4+xdog.1" and value.extras == {"browser"}
+        and value.url is None and value.marker is not None
+        for value in xhs)
+    for extra in ("", "search", "skills", "eyes", "acp", "xhs", "all"):
+        assert any(value.marker.evaluate({"extra": extra}) for value in xhs) is (extra in {"xhs", "all"})
+    assert set(metadata.get_all("Provides-Extra", [])) == {"search", "eyes", "acp", "xhs", "all"}
     skills = [value for value in requirements if value.name == "xdog-skills"]
     assert skills and all(str(value.specifier) == ">=2.5.0" for value in skills)
     assert any(value.marker is None for value in skills)  # Default capability, no extra required.

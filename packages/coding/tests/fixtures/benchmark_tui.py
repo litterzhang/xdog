@@ -9,7 +9,7 @@ from xdog.coding.modes.interactive.components.chat_log import ChatLog
 from xdog.coding.modes.interactive.components.custom_editor import CustomEditorComponent
 from xdog.coding.modes.interactive.components.footer import FooterComponent
 from xdog.coding.modes.interactive.theme import create_default_theme
-from xdog.tui.components.bounded_details import BoundedDetails
+from xdog.tui.components.details_panel import DetailsPanel
 from xdog.tui.components.inline_layout import InlineLayout
 from xdog.tui.main_buffer_renderer import MainBufferRenderer
 from xdog.tui.tui import CURSOR_MARKER
@@ -25,9 +25,9 @@ def benchmark(messages: int = 1000, frames: int = 300) -> dict[str, object]:
     footer = FooterComponent(theme)
     footer.set_activity("running bash")
     editor = CustomEditorComponent(theme)
-    editor.set_focus(True)
+    editor.focused = True
     editor.set_text("persistent draft")
-    layout = InlineLayout(chat, footer, editor, details=BoundedDetails(chat.detail_records))
+    layout = InlineLayout(chat, footer, editor, details=DetailsPanel(chat.detail_records))
     painter = MainBufferRenderer()
     log: list[str] = []
     samples: dict[str, list[float]] = {"stream": [], "resize": []}

@@ -121,6 +121,8 @@ class EventStream(Generic[T]):
             self._queue.put_nowait(None)
         self._consumed = True
         self._released = True
+        if not self._result_future.done():
+            self._result_future.cancel()
 
     # -- listener API -------------------------------------------------------
 
@@ -150,6 +152,13 @@ class EventStream(Generic[T]):
                     if item is None:
                         break
                     yield item
+        except (Exception, asyncio.CancelledError) as exc:
+            self.set_exception(exc)
+            # Iteration itself observed this failure; subsequent result() still
+            # raises it, without an unobserved Future warning for iterator-only users.
+            if self._result_future.done() and not self._result_future.cancelled():
+                self._result_future.exception()
+            raise
         finally:
             self._consumed = True
 
@@ -165,7 +174,7 @@ class EventStream(Generic[T]):
         if not self._result_future.done() and not self._consumed:
             async for _ in self:
                 pass
-        return await self._result_future
+        return await asyncio.shield(self._result_future)
 
     def set_result(self, value: T) -> None:
         """Resolve the result future (called by the provider implementation)."""

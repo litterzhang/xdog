@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-from xdog.tui.components.bounded_details import BoundedDetails, DetailRecord
+from xdog.tui.components.details_panel import DetailRecord, DetailsPanel
 from xdog.tui.components.inline_layout import InlineLayout
 from xdog.tui.components.text import Text
 from xdog.tui.keys import KeyEvent
 from xdog.tui.tui import Component
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 
 @dataclass
@@ -76,7 +76,7 @@ def test_bounded_details_navigates_records_and_scrolls() -> None:
         DetailRecord("first", "1\n2\n3\n4", "tool"),
         DetailRecord("second", "a\nb", "reasoning"),
     )
-    details = BoundedDetails(lambda: records, max_rows=3)
+    details = DetailsPanel(lambda: records, max_rows=3)
 
     assert "second" in details.render(80)[0]
     assert details.handle_input(KeyEvent(key="left"))
@@ -98,15 +98,15 @@ def test_single_row_terminal_keeps_editor_within_height_budget() -> None:
 
 
 def test_details_respect_display_cell_width_for_wide_text() -> None:
-    details = BoundedDetails(lambda: (DetailRecord("工具结果", "界" * 20),))
+    details = DetailsPanel(lambda: (DetailRecord("工具结果", "界" * 20),))
 
     rows = details.render(10)
 
-    assert all(visible_width(row) <= 10 for row in rows)
+    assert all(string_width(row) <= 10 for row in rows)
 
 
 def test_details_can_scroll_to_every_part_of_a_long_line() -> None:
-    details = BoundedDetails(lambda: (DetailRecord("tool", "HEAD" + "x" * 100 + "TAIL"),), max_rows=3)
+    details = DetailsPanel(lambda: (DetailRecord("tool", "HEAD" + "x" * 100 + "TAIL"),), max_rows=3)
     assert "TAIL" in "".join(details.render(12))
     for _ in range(20):
         details.handle_input(KeyEvent(key="pageup"))
@@ -118,19 +118,19 @@ def test_details_can_scroll_to_every_part_of_a_long_line() -> None:
 def test_editor_layout_budget_with_unicode_and_details(height: int, width: int) -> None:
     from types import SimpleNamespace
 
-    from xdog.tui.components.prompt_editor import PromptEditor
+    from xdog.tui.components.input_panel import InputPanel
     def plain(text: str) -> str:
         return text
-    editor = PromptEditor(SimpleNamespace(accent=plain, bold=plain, dim=plain, border=plain))
+    editor = InputPanel(SimpleNamespace(accent=plain, bold=plain, dim=plain, border=plain))
     editor.set_text("界e\u0301👩\u200d💻🇺🇸\t\n" * 5 + "draft")
     layout = InlineLayout(
         Text("history", 0, 0), Text("status", 0, 0), editor,
-        details=BoundedDetails(lambda: (DetailRecord("tool", "result" * 20),)),
+        details=DetailsPanel(lambda: (DetailRecord("tool", "result" * 20),)),
         render_height=height,
     )
     rows = layout.render(width)[layout.transient_start:]
     assert len(rows) <= height
-    assert all(visible_width(row) <= width for row in rows)
+    assert all(string_width(row) <= width for row in rows)
     assert any("draft" in row for row in rows)
 
 
@@ -141,7 +141,7 @@ def test_cell_truncation_does_not_split_joined_emoji() -> None:
 
 
 def test_small_detail_pages_visit_every_line_and_clamp_at_top() -> None:
-    details = BoundedDetails(lambda: (DetailRecord("tool", "\n".join(f"line-{i}" for i in range(20))),))
+    details = DetailsPanel(lambda: (DetailRecord("tool", "\n".join(f"line-{i}" for i in range(20))),))
     details.set_render_budget(3)
     seen = set()
     for _ in range(30):
@@ -162,7 +162,7 @@ def test_hidden_work_summary_has_visible_omission_count() -> None:
 
 def test_open_details_from_start_pins_top_until_explicit_end() -> None:
     records = [DetailRecord("tool", "\n".join(f"row-{i}" for i in range(30)), "tool")]
-    details = BoundedDetails(lambda: records, max_rows=4)
+    details = DetailsPanel(lambda: records, max_rows=4)
     details.show_latest(from_start=True)
     assert "row-0" in details.render(80)
     assert "row-29" not in details.render(80)
@@ -186,7 +186,7 @@ def test_status_activity_context_and_model_share_one_dim_style() -> None:
     for width in (8, 32, 80):
         row = status.render(width)[0]
         assert row == gray(strip_ansi(row))
-        assert visible_width(row) <= width
+        assert string_width(row) <= width
     assert "ready" in strip_ansi(status.render(80)[0])
     assert "model-name" in strip_ansi(status.render(80)[0])
     assert "ctx:1k/32k" in strip_ansi(status.render(80)[0])
@@ -206,7 +206,7 @@ def test_compact_hint_style_applies_after_every_update_and_truncation() -> None:
         for width in (0, 8, 40):
             rows = hints.render(width)
             assert all(row == gray(strip_ansi(row)) for row in rows)
-            assert all(visible_width(row) <= width for row in rows)
+            assert all(string_width(row) <= width for row in rows)
     plain = CompactText("plain", 0, 0, style=lambda text: text)
     assert plain.render(20) == ["plain"]
 
@@ -273,6 +273,6 @@ def test_status_and_shortcuts_align_with_editable_text_not_prompt_marker(width: 
     input_row = next(row for row in rows if "INPUT" in row)
     hint_row = next(row for row in rows if "Enter" in row)
     assert status_row.index("ready") == input_row.index("INPUT") == hint_row.index("Enter") == 2
-    assert all(visible_width(row) <= width for row in rows)
+    assert all(string_width(row) <= width for row in rows)
     if width >= 24:
-        assert status_row.endswith("model") and visible_width(status_row) == width
+        assert status_row.endswith("model") and string_width(status_row) == width

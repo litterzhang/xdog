@@ -8,8 +8,8 @@ from xdog.coding.modes.interactive.components.assistant_message import Assistant
 from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
 from xdog.coding.modes.interactive.components.user_message import UserMessageComponent
 from xdog.coding.modes.interactive.theme import Theme
-from xdog.tui.components.bounded_details import DetailRecord
 from xdog.tui.components.details import set_details_expanded
+from xdog.tui.components.details_panel import DetailRecord
 from xdog.tui.components.extension_command import ExtensionCommand
 from xdog.tui.components.messages import ThinkingMessage, Transcript
 from xdog.tui.components.text import Text

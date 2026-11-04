@@ -20,7 +20,7 @@ def test_model_display_limits_ignore_foreign_model_and_invalid_or_legacy_metadat
 
 
 def test_model_context_and_usage_remain_visible_at_default_width_with_long_aliases():
-    from xdog.tui.utils import strip_ansi, visible_width
+    from xdog.tui.utils import string_width, strip_ansi
 
     ui = ChatApp('/tmp/unused-provider-dynamic.sock')
     try:
@@ -29,7 +29,7 @@ def test_model_context_and_usage_remain_visible_at_default_width_with_long_alias
         ui._context_window = 16000
         ui._render_status()
         rows = ui._footer.render(80)
-        assert len(rows) == 1 and visible_width(rows[0]) <= 80
+        assert len(rows) == 1 and string_width(rows[0]) <= 80
         assert '16k' in strip_ansi(rows[0]) and '↑0' in strip_ansi(rows[0]) and '↓0' in strip_ansi(rows[0])
     finally:
         ui._request_exit()

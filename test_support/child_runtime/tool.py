@@ -146,7 +146,7 @@ class TestChildTool:
             {
                 "access": "inherit",
                 "inherit_context": False,
-                "config": {"label": "Reviewer", "instructions": "Inspect only", "tools": []},
+                "config": {"label": "Reviewer", "system_prompt": "Inspect only", "tools": []},
             },
         ],
     )
@@ -175,7 +175,7 @@ class TestChildTool:
             assert specs[0].inherit_context is fields.get("inherit_context", False)
             if fields:
                 assert record["config"]["label"] == "Reviewer"
-                assert record["config"]["instructions"] == "Inspect only"
+                assert record["config"]["system_prompt"] == "Inspect only"
                 assert record["config"]["tools"] == []
             assert json_result(await invoke(tool, "inspect", id=identifier))["result"] == "child answer"
             await invoke(tool, "close", id=identifier)
@@ -197,7 +197,7 @@ class TestChildTool:
             {
                 "reviewer": {
                     "description": "Read only",
-                    "config": {"instructions": "REVIEW", "inherit_context": False, "tools": []},
+                    "config": {"system_prompt": "REVIEW", "inherit_context": False, "tools": []},
                 }
             }
         )
@@ -209,7 +209,7 @@ class TestChildTool:
             identifier = (await invoke(tool, "spawn", task="Review", config={"preset": "reviewer"})).content[0].text
             record = json_result(await invoke(tool, "wait", id=identifier))
             assert record["status"] == "completed" and len(specs) == 1
-            assert specs[0].preset == "reviewer" and specs[0].instructions == "REVIEW"
+            assert specs[0].preset == "reviewer" and specs[0].system_prompt == "REVIEW"
             assert not specs[0].inherit_context and specs[0].tools == ()
         finally:
             await owner.aclose()

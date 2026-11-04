@@ -120,6 +120,6 @@ mutating request or cancels an observation already durably accepted by the daemo
 The retired project/cwd observer runtime and embedded ObserverService are removed.
 The internal DaemonRuntime hosts only the durable DaemonObservers registry;
 `--directory` isolates this same implementation rather than selecting another lifecycle.
-The existing control-wire `cwd` remains for live protocol/storage compatibility
-and must equal the daemon directory. It is not a project, source base, delivery
-destination or permission grant. Source/handler paths still belong to normalized JSON.
+Control protocol v2 and its owner record name the daemon `directory` explicitly;
+the redundant historical `cwd` field is removed, with no v1 decoder or migration.
+The directory is not a project, source base, delivery destination or permission grant. Source/handler paths still belong to normalized JSON.

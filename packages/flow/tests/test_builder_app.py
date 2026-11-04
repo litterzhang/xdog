@@ -53,7 +53,7 @@ from xdog.flow.loader import load_workflow
 from xdog.flow.models import Condition, EdgeDef, NodeDef, Port, WorkflowDef
 from xdog.tui.keys import KeyEvent
 from xdog.tui.tui import Component
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 def _write_wf(tmp: pathlib.Path, wf: WorkflowDef) -> pathlib.Path:
@@ -278,7 +278,7 @@ def test_render_is_two_column_and_equal_width(tmp_path: pathlib.Path) -> None:
     app = _rwr_app(tmp_path)
     lines = app.render(100)
     # every rendered line has the same DISPLAY width (columns align under color)
-    widths = {visible_width(line) for line in lines}
+    widths = {string_width(line) for line in lines}
     assert widths == {100}, f"unequal widths: {sorted(widths)}"
     # a vertical column separator appears in the body
     joined = strip_ansi("\n".join(lines))
@@ -429,7 +429,7 @@ def test_equal_width_across_all_foci(tmp_path: pathlib.Path) -> None:
     """Every focus renders equal-width rows (columns stay aligned under color)."""
     app = _rwr_app(tmp_path)
     for _ in range(3):
-        widths = {visible_width(line) for line in app.render(100)}
+        widths = {string_width(line) for line in app.render(100)}
         assert widths == {100}, f"unequal widths at focus {app._focus}: {sorted(widths)}"
         app.handle_input(KeyEvent(key="tab"))
 
@@ -656,7 +656,7 @@ def test_tools_right_pane_wraps_long_description(tmp_path: pathlib.Path, monkeyp
     # proving it isn't cut off at the right border.
     assert "terminal operations" in joined  # tail of bash's description
     # No rendered row exceeds the frame width (wrapping keeps rows in-bounds).
-    assert {visible_width(line) for line in app.render(78)} == {78}
+    assert {string_width(line) for line in app.render(78)} == {78}
 
 
 def test_details_pane_wraps_long_field(tmp_path: pathlib.Path) -> None:
@@ -672,7 +672,7 @@ def test_details_pane_wraps_long_field(tmp_path: pathlib.Path) -> None:
     joined = strip_ansi("\n".join(rendered))
     # the prompt's tail survives (wrapped onto later rows), and rows stay in-bounds
     assert joined.count("word") >= 60
-    assert {visible_width(line) for line in rendered} == {80}
+    assert {string_width(line) for line in rendered} == {80}
 
 
 # --- fill-screen + scroll ----------------------------------------------------

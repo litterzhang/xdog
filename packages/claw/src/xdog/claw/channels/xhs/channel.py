@@ -15,7 +15,7 @@ from xdog.claw.core.identity.models import label
 from xdog.claw.core.outputs.delivery import DeliveryNotSent
 from xdog.claw.core.types import UserInput
 
-from .api import XhsApi
+from .api import DependencyMissing, LoginRequired, XhsApi
 from .login_access import LoginBusy, login_access
 from .state import ScanState
 
@@ -61,7 +61,7 @@ class XhsChannel(Channel):
         self._state = await run_owned(ScanState, self.data_dir / 'xhs' / (key + '.sqlite3'))
         self._connected = True
         self.status = 'starting'
-        # Browser recovery is independent of gateway readiness; no model starts here.
+        # Account verification is independent of gateway readiness; no model starts here.
         self._task = asyncio.create_task(self._poll_loop(), name='claw-xhs-poll')
 
     async def disconnect(self) -> None:
@@ -81,15 +81,20 @@ class XhsChannel(Channel):
         if saved != account:
             raise DeliveryNotSent('XHS account binding changed; reconnect explicitly')
         try:
-            async with login_access(self.data_dir):
-                current, _ = await self.api.identity()
-        except LoginBusy:
+            current, _ = await self.api.identity()
+        except (LoginBusy, LoginRequired, DependencyMissing):
             raise
         except Exception as exc:
             raise DeliveryNotSent('XHS login identity could not be verified') from exc
         if current != account.account_id:
-            raise DeliveryNotSent('XHS backend account differs from the original login binding')
+            raise DeliveryNotSent('XHS authenticated account differs from the original login binding')
         return account
+
+    async def _before_send(self) -> None:
+        try:
+            await self._verified()
+        except (LoginRequired, DependencyMissing) as exc:
+            raise DeliveryNotSent('XHS login/dependency is unavailable; no platform write was started') from exc
 
     def _comment(self, raw: dict[str, Any], account: ChannelAccount) -> UserInput | None:
         sender = raw.get('from')
@@ -108,75 +113,64 @@ class XhsChannel(Channel):
 
     async def read_post(self, original: UserInput) -> dict[str, Any]:
         """Explicit read, never called by polling or used to change the reply target."""
-        if not self.accepts_saved_reply(original):
-            raise ValueError('Original XHS account binding is unavailable')
-        try:
-            account = await self._verified()
-            raw_items = await self.api.notifications()
-            candidates = []
-            for raw in raw_items:
-                try:
-                    comment = self._comment(raw, account)
-                except ValueError:
-                    continue
-                if (comment is not None and comment.sender == original.sender
-                        and comment.metadata['comment_id'] == original.metadata.get('comment_id')
-                        and comment.metadata['feed_id'] == original.metadata.get('feed_id')):
-                    candidates.append(raw)
-            if len(candidates) != 1:
-                raise ValueError('Original XHS comment/post could not be verified')
-            token = label(candidates[0].get('feed_xsec_token'), maximum=4096)
-            result = await self.api.post(original.metadata['feed_id'], token)
-            await self._verified()
-            return result
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            # Never expose backend URLs, cookies, tokens or response bodies to a public model.
-            raise ValueError('Original XHS post is unavailable; no post content was obtained') from exc
+        async with login_access(self.data_dir):
+            if not self.accepts_saved_reply(original):
+                raise ValueError('Original XHS account binding is unavailable')
+            try:
+                await self._verified()
+                result = await self.api.post(original.metadata['feed_id'])
+                await self._verified()
+                return result
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Never expose SDK cookies, tokens or response bodies to a public model.
+                raise ValueError('Original XHS post is unavailable; no post content was obtained') from exc
 
     async def poll_once(self) -> None:
-        account = await self._verified()
-        state = self._state
-        if state is None:
-            raise ValueError('XHS scan state is unavailable')
-        raw_items = await self.api.notifications()
-        messages = []
-        malformed = False
-        for raw in raw_items:
-            try:
-                message = self._comment(raw, account)
-            except ValueError:
-                malformed = True
-                continue  # Isolate a malformed event without hiding the scan gap.
-            if message is not None:
-                messages.append(message)
-        baseline, seen = await run_owned(state.snapshot, account.account_id,
-                                          tuple(str(m.metadata['comment_id']) for m in messages))
-        items = [(str(m.metadata['comment_id']), self.reply_context(m) | {'content': m.content}) for m in messages]
-        if not baseline:
-            await run_owned(lambda: state.accept(account.account_id, items, baseline=True))
-            self.scan_gap = await run_owned(lambda: state.gap(
-                account.account_id, found=malformed or len(raw_items) >= 200))
+        async with login_access(self.data_dir):
+            account = await self._verified()
+            state = self._state
+            if state is None:
+                raise ValueError('XHS scan state is unavailable')
+            batch = await self.api.notifications()
+            raw_items = batch.items
+            messages = []
+            malformed = False
+            for raw in raw_items:
+                try:
+                    message = self._comment(raw, account)
+                except ValueError:
+                    malformed = True
+                    continue  # Isolate a malformed event without hiding the scan gap.
+                if message is not None:
+                    messages.append(message)
+            baseline, seen = await run_owned(state.snapshot, account.account_id,
+                                              tuple(str(m.metadata['comment_id']) for m in messages))
+            items = [(str(m.metadata['comment_id']), self.reply_context(m) | {'content': m.content}) for m in messages]
+            if not baseline:
+                await run_owned(lambda: state.accept(account.account_id, items, baseline=True))
+                self.scan_gap = await run_owned(lambda: state.gap(
+                    account.account_id, found=malformed or batch.truncated))
+                self.status = 'watching_with_gap' if self.scan_gap else 'watching'
+                # Initial history is never automatically answered.
+                return
+            # Page cursors bound one scan, not a durable platform event journal.
+            # Missing overlap anchors and saturated windows remain visible gaps.
+            found_gap = (malformed or bool(messages and not any(comment in seen for comment, _ in items))
+                         or batch.truncated)
+            self.scan_gap = await run_owned(lambda: state.gap(account.account_id, found=found_gap))
+            for message, (comment, payload) in reversed(list(zip(messages, items, strict=True))):
+                previous = seen.get(comment)
+                if previous is not None:
+                    if previous != json.dumps(payload, sort_keys=True, ensure_ascii=False):
+                        self.scan_gap = await run_owned(lambda: state.gap(account.account_id, found=True))
+                    continue
+                if self._on_accept is None:
+                    raise ValueError('XHS durable input callback is unavailable')
+                await self._on_accept(message)  # Only Core Inbox commit permits connector advancement.
+                await run_owned(lambda: state.accept(account.account_id, [(comment, payload)]))
             self.status = 'watching_with_gap' if self.scan_gap else 'watching'
-            # Initial history is never automatically answered.
-            return
-        # No cursor/complete flag exists upstream. An overlap is useful, not proof
-        # of completeness; missing anchors/limit saturation are explicitly visible.
-        found_gap = (malformed or bool(messages and not any(comment in seen for comment, _ in items))
-                     or len(raw_items) >= 200)
-        self.scan_gap = await run_owned(lambda: state.gap(account.account_id, found=found_gap))
-        for message, (comment, payload) in reversed(list(zip(messages, items, strict=True))):
-            previous = seen.get(comment)
-            if previous is not None:
-                if previous != json.dumps(payload, sort_keys=True, ensure_ascii=False):
-                    self.scan_gap = await run_owned(lambda: state.gap(account.account_id, found=True))
-                continue
-            if self._on_accept is None:
-                raise ValueError('XHS durable input callback is unavailable')
-            await self._on_accept(message)  # Only Core Inbox commit permits connector advancement.
-            await run_owned(lambda: state.accept(account.account_id, [(comment, payload)]))
-        self.status = 'watching_with_gap' if self.scan_gap else 'watching'
 
     async def _poll_loop(self) -> None:
         while self._connected:
@@ -186,6 +180,10 @@ class XhsChannel(Channel):
                 raise
             except LoginBusy:
                 self.status = 'login_pending'
+            except DependencyMissing:
+                self.status = 'dependency_missing'
+            except LoginRequired:
+                self.status = 'login_required'
             except Exception:
                 self.status = 'unavailable'  # Do not log account tokens or arbitrary backend response bodies.
             await asyncio.sleep(self.poll_seconds)
@@ -243,33 +241,33 @@ class XhsChannel(Channel):
         await self.send_output(original, '', text)
 
     async def send_output(self, original: UserInput, output_id: str, text: str) -> None:
-        if not self.accepts_saved_reply(original):
-            raise DeliveryNotSent('XHS original destination/account changed')
-        if original.metadata.get('publication') is True:
-            if not self.publish_enabled:
-                raise DeliveryNotSent('XHS publishing is disabled')
-            payload = json.loads(text)
-            from .media import verified_paths
-            try:
-                paths = await run_owned(verified_paths, payload['images'], self.data_dir / 'xhs' / 'publications')
-            except Exception as exc:
-                raise DeliveryNotSent('Frozen publication resources are unavailable or changed') from exc
-            await self._verified()
-            await self.api.request('POST', 'publish', json={**payload, 'images': paths})
-        else:
-            if len(text) > 1000:
-                raise DeliveryNotSent('XHS reply exceeds 1000 characters; no split comments were submitted')
-            if not self.replies_enabled:
-                raise DeliveryNotSent('XHS automatic replies are disabled; no comment was submitted')
-            comment_id = original.metadata.get('comment_id')
-            if not isinstance(comment_id, str) or not comment_id:
-                raise DeliveryNotSent('XHS reply requires its original comment target')
-            await self._verified()
-            # Reply to the admitted, frozen target. A moving notification window
-            # is not an authoritative lookup or a prerequisite for sending.
-            await self.api.request('POST', 'notifications/reply',
-                json={'comment_id': comment_id, 'content': text})
-        # The pinned backend supplies no independently verifiable post/reply ID.
-        # HTTP success is submission evidence, not delivery. OutputDelivery journals
-        # this as unknown, never automatically retries an ambiguous platform effect.
-        raise RuntimeError('XHS request submitted; platform delivery is unverified. Inspect before any new send.')
+        async with login_access(self.data_dir):
+            if not self.accepts_saved_reply(original):
+                raise DeliveryNotSent('XHS original destination/account changed')
+            if original.metadata.get('publication') is True:
+                if not self.publish_enabled:
+                    raise DeliveryNotSent('XHS publishing is disabled')
+                payload = json.loads(text)
+                from .media import verified_paths
+                try:
+                    paths = await run_owned(verified_paths, payload['images'], self.data_dir / 'xhs' / 'publications')
+                except Exception as exc:
+                    raise DeliveryNotSent('Frozen publication resources are unavailable or changed') from exc
+                await self._before_send()
+                await self.api.publish(payload['title'], payload['content'], paths)
+            else:
+                if len(text) > 1000:
+                    raise DeliveryNotSent('XHS reply exceeds 1000 characters; no split comments were submitted')
+                if not self.replies_enabled:
+                    raise DeliveryNotSent('XHS automatic replies are disabled; no comment was submitted')
+                comment_id = original.metadata.get('comment_id')
+                if not isinstance(comment_id, str) or not comment_id:
+                    raise DeliveryNotSent('XHS reply requires its original comment target')
+                await self._before_send()
+                # Reply to the admitted, frozen target. A moving notification window
+                # is not an authoritative lookup or a prerequisite for sending.
+                await self.api.reply(original.metadata['feed_id'], comment_id, text)
+            # An API response is not proof of public visibility or moderation acceptance.
+            # API success is submission evidence, not delivery. OutputDelivery journals
+            # this as unknown, never automatically retries an ambiguous platform effect.
+            raise RuntimeError('XHS request submitted; platform delivery is unverified. Inspect before any new send.')

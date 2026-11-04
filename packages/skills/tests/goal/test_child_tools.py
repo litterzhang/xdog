@@ -17,8 +17,6 @@ from xdog.skills.goal.models import Owner
 from xdog.skills.goal.service import GoalService
 from xdog.skills.goal.store import GoalStore
 
-from packages.skills.tests.goal.legacy import wait_goal
-
 USER = OperationContext(True)
 
 
@@ -143,12 +141,11 @@ async def test_deleted_task_cannot_be_recreated(scope):
     ('pause', {'reason': 'user stopped Goal reminders'}),
     ('wait', {'until': 'user', 'reason': 'need user', 'question': 'Choose target?',
               'impact': 'Target unknown', 'resume_when': 'User selects target'}),
-    ('wait', {'until': 'host', 'reason': 'need host'}),
     ('wait', {'until': 'tasks', 'reason': 'await original child'}),
 ])
 async def test_original_child_results_do_not_release_pause_or_wait(scope, action, fields):
     service, goal, tool, _ = scope
-    paused = (await wait_goal(service, goal.id, context=USER, **fields) if action == 'wait'
+    paused = (await service.change('wait', goal.id, context=USER, **fields) if action == 'wait'
               else await service.change(action, goal.id, context=USER, **fields))
     assert not (await tool.execute('read', {'action': 'tasks', 'task_id': 'one'})).is_error
     result = await tool.execute('result', update(status='completed', summary='accepted child finished'))

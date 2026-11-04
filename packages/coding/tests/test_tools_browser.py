@@ -40,7 +40,7 @@ async def test_actual_tools_browser_full_schema_query_refresh_no_model_and_nativ
             config=AgentConfig(model='test/model', supports_tool_calls=capability),
             tools=tools), session_data=store.create_session(working_dir=tmp_path), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_repo=None, bash=None, permissions=PermissionManager('deny'))
+            tool_repo=None, permissions=PermissionManager('deny'))
         ui = InteractiveMode(session)
     else:
         class Adapter:
@@ -167,13 +167,14 @@ async def test_gateway_inventory_capability_owner_cancel_and_reader_responsivene
         await send({**base, 'request_id': 'old'})
         assert not (await receive('tool_inventory_result'))['success']
         await send({'type': 'ping', 'tool_inventory': 1})
-        assert (await receive('pong'))['tool_inventory_selection'] == 1
-        await send({**base, 'request_id': 'legacy'})
-        legacy = await receive('tool_inventory_result')
-        assert legacy['success'] and set(legacy['snapshot']) == {
-            'session_id', 'owner_id', 'model', 'api_enabled', 'tools'}
+        assert 'tool_inventory_selection' not in await receive('pong')
+        await send({**base, 'request_id': 'current'})
+        current = await receive('tool_inventory_result')
+        assert current['success'] and set(current['snapshot']) == {
+            'session_id', 'owner_id', 'model', 'api_enabled', 'tools',
+            'active_tools', 'selection_mode', 'selection_revision'}
         session.agent.set_active_tools([], expected_revision=session.agent.tool_selection_revision)
-        await send({**base, 'request_id': 'selected', 'include_selection': True})
+        await send({**base, 'request_id': 'selected'})
         selected = await receive('tool_inventory_result')
         assert selected['success'] and selected['snapshot']['active_tools'] == []
         assert selected['snapshot']['selection_mode'] == 'explicit' and selected['snapshot']['tools']
@@ -239,7 +240,7 @@ async def test_headless_tools_command_is_complete_read_only_and_query_filtered(t
         tools=tuple(AgentTool(name='native_' + str(index), parameters={'type': 'object'}, execute=execute)
                     for index in range(80))), session_data=store.create_session(working_dir=tmp_path),
         session_manager=store, settings=SettingsManager(global_path=tmp_path / 'settings.json'),
-        working_dir=tmp_path, tool_repo=None, bash=None, permissions=PermissionManager('deny'))
+        working_dir=tmp_path, tool_repo=None, permissions=PermissionManager('deny'))
     try:
         result = json.loads((await execute_command('tools', '', session)).output)
         assert len([tool for tool in result['tools'] if tool['name'].startswith('native_')]) == 80
@@ -264,7 +265,8 @@ async def test_claw_inventory_reconnect_canonical_source_and_output_admission_ar
     ui._tool_inventory_supported = True
     ui._open_tools()
     panel = ui._transcript_panel
-    records = inventory_records({'model': 'model', 'api_enabled': True, 'tools': [
+    records = inventory_records({'model': 'model', 'api_enabled': True, 'active_tools': ['probe'],
+        'selection_mode': 'default', 'selection_revision': 0, 'tools': [
         {'name': 'probe', 'description': 'definition', 'parameters': {'type': 'object'}}]})
     panel.publish_inventory(records)
     panel.render(80)
@@ -301,13 +303,14 @@ async def test_inventory_empty_valid_snapshot_differs_from_failed_refresh_and_bl
     session = AgentSession(agent=Agent(lambda *args: pytest.fail('No model'), config=AgentConfig(model='model')),
         session_data=store.create_session(working_dir=tmp_path), session_manager=store,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_repo=None, bash=None, permissions=PermissionManager('deny'))
+        tool_repo=None, permissions=PermissionManager('deny'))
     ui = InteractiveMode(session)
     panel = ToolInventoryPanel(lambda: (), lambda: None, lambda: None)
     ui._transcript_panel = panel
     ui._tools_context = ui._mcp_context_key()
     try:
-        panel.publish_inventory(inventory_records({'model': 'model', 'api_enabled': False, 'tools': []}))
+        panel.publish_inventory(inventory_records({'model': 'model', 'api_enabled': False, 'active_tools': [],
+            'selection_mode': 'default', 'selection_revision': 0, 'tools': []}))
         panel.render(80)
         async with asyncio.timeout(3):
             while not panel.settled:

@@ -10,7 +10,7 @@ from xdog.tui.autocomplete import CompletionItem, StaticCompletionProvider
 from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.file_completion import WorkspaceFileCompletionProvider
 from xdog.tui.keys import KeyEvent
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 class Theme:
@@ -217,7 +217,7 @@ def test_tiny_editor_and_permission_focus_hide_completions() -> None:
         editor.set_render_budget(budget)
         lines = editor.render(12)
         assert len(lines) <= budget
-        assert all(visible_width(line) <= 12 for line in lines)
+        assert all(string_width(line) <= 12 for line in lines)
     editor.set_autocomplete_visible(False)
     assert "@one.txt" not in "\n".join(strip_ansi(line) for line in editor.render(50))
 

@@ -10,7 +10,9 @@ def _text(result) -> str:
     return "\n".join(p.text for p in result.content if isinstance(p, TextContent))
 
 
-_SCHEMA = {"category": "string", "count": "integer", "active": "boolean"}
+_SCHEMA = {'type': 'object', 'properties': {
+    'category': {'type': 'string'}, 'count': {'type': 'integer'}, 'active': {'type': 'boolean'}},
+    'required': ['category', 'count', 'active']}
 
 
 @pytest.mark.asyncio
@@ -51,7 +53,7 @@ async def test_wrong_type_rejected():
 async def test_boolean_rejected_where_integer_expected():
     tool = create_submit_result_tool()
     sink: dict = {}
-    ctx = {"result_schema": {"count": "integer"}, "result_sink": sink}
+    ctx = {"result_schema": {"type": "object", "properties": {"count": {"type": "integer"}}}, "result_sink": sink}
     result = await tool.execute("c1", {"result": {"count": True}}, ctx=ctx)
     assert _text(result).startswith("Error:")
     assert "result" not in sink

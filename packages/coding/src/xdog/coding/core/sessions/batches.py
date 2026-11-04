@@ -68,13 +68,12 @@ def agent_message(item: TurnInput) -> AgentMessage:
 def project_message(message: AgentMessage) -> Message | None:
     """Project known canonical history without calling dynamic extension hooks."""
     from xdog.agent.extensions.context_message import llm_message as context_message
-    from xdog.agent.external_event import llm_message as historical_event
     from xdog.agent.session_input import llm_message as session_message
     from xdog.ai.types import AssistantMessage, ToolResultMessage, UserMessage
 
     if isinstance(message, (AssistantMessage, ToolResultMessage, UserMessage)):
         return message
-    return context_message(message) or historical_event(message) or session_message(message)
+    return context_message(message) or session_message(message)
 
 
 def available_input_tokens(session: AgentSession) -> int:

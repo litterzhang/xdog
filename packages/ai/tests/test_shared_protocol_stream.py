@@ -58,7 +58,9 @@ async def test_terminal_result_policy_and_lazy_consumption(protocol, monkeypatch
         assert await stream.collect() == events
         result = await stream.result()
     if case in {'done', 'error'}:
-        assert result is (final if case == 'done' else error)
+        assert result is (final if case == 'done' else events[0].message)
+        if case == 'error':
+            assert result.failure.kind == 'unknown'
     else:
         assert result.stop_reason == 'error'
         assert result.error_message == ('Empty stream' if case == 'empty' else 'Stream ended without done event')
@@ -85,8 +87,10 @@ async def test_transport_failure_is_not_replaced_with_fabricated_terminal(protoc
     with pytest.raises(OSError) as raised:
         await stream.collect()
     assert raised.value is failure and closed == ['closed']
-    # Existing API raises during iteration; it does not invent a successful final message.
-    assert not stream._result_future.done()
+    # No fabricated final message: both consumers observe the original failure.
+    with pytest.raises(OSError) as final:
+        await stream.result()
+    assert final.value is failure
     await stream.aclose()
 
 
@@ -106,7 +110,9 @@ async def test_cancel_during_active_iteration_closes_source_without_success_resu
     consuming.cancel()
     with pytest.raises(asyncio.CancelledError):
         await consuming
-    assert closed.is_set() and not stream._result_future.done()
+    assert closed.is_set()
+    with pytest.raises(asyncio.CancelledError):
+        await stream.result()
     await stream.aclose()
 
 
@@ -127,7 +133,8 @@ async def test_explicit_early_close_joins_owned_iterator_not_just_outer_generato
         await iterator.aclose()  # API requires active iteration to stop before explicit stream close.
         await stream.aclose()
         assert closed == ['closed'], 'Explicit close returned before its actual source cleanup'
-        assert not stream._result_future.done()
+        with pytest.raises(asyncio.CancelledError):
+            await stream.result()
         await stream.aclose()
         assert closed == ['closed']
     finally:
@@ -142,7 +149,8 @@ async def test_close_without_iteration_is_lazy(protocol, monkeypatch):
     monkeypatch.setattr(protocol, '_stream_impl', forbidden)
     stream = open_stream(protocol)
     await stream.aclose()
-    assert not stream._result_future.done()
+    with pytest.raises(asyncio.CancelledError):
+        await stream.result()
 
 
 async def test_owned_iterator_cleanup_never_closes_borrowed_client(protocol, monkeypatch):
@@ -184,3 +192,28 @@ assert callable(message_stream)
 '''
     result = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+async def test_failed_iterator_rejects_later_result_instead_of_waiting_forever(protocol, monkeypatch):
+    failure = RuntimeError('adapter failed before first frame')
+    async def source(*args):
+        raise failure
+        yield
+    monkeypatch.setattr(protocol, '_stream_impl', source)
+    stream = open_stream(protocol)
+    with pytest.raises(RuntimeError) as collected:
+        await stream.collect()
+    with pytest.raises(RuntimeError) as result:
+        await stream.result()
+    assert collected.value is result.value is failure
+    await stream.aclose()
+
+
+async def test_explicit_close_of_unstarted_stream_settles_result_without_request(protocol, monkeypatch):
+    def forbidden(*args):
+        raise AssertionError('An unstarted close must not authenticate or request')
+    monkeypatch.setattr(protocol, '_stream_impl', forbidden)
+    stream = open_stream(protocol)
+    await stream.aclose()
+    with pytest.raises(asyncio.CancelledError):
+        await stream.result()

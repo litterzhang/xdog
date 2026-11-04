@@ -1,7 +1,7 @@
-"""Host-local exclusion for an explicit scan and browser-producing identity reads.
+"""Host-local exclusion between explicit login and account verification.
 
-This is an advisory file lease, not persisted login state or a backend lifecycle.
-Other clients of the same backend must also avoid creating browsers during a scan.
+This advisory lease protects credential/binding publication; it is not a service
+or a second login-state database.
 """
 from __future__ import annotations
 

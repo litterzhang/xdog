@@ -48,7 +48,6 @@ def session(tmp_path: Path) -> AgentSession:
         session_manager=SessionManager(sessions_dir=tmp_path / "sessions"),
         settings=SettingsManager(global_path=tmp_path / "settings.json", project_dir=tmp_path),
         tool_repo=None,
-        bash=None,
         working_dir=tmp_path,
     )
 

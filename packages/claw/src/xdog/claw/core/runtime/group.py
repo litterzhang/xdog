@@ -474,24 +474,6 @@ class GroupRuntime:
             self._active_session._meta = meta
         return meta.label
 
-    def navigate_session(self, action: str, session_id: str, branch_id: str, index: int,
-                         expected_session: str, alive: Callable[[], bool] = lambda: True,
-                         owner_loop: asyncio.AbstractEventLoop | None = None) -> None:
-        """Compatibility boundary for context rotation, never history activation.
-
-        A group has one logical main Agent. Saved transcripts and legacy branches
-        are read-only evidence, not alternate execution routes.
-        """
-        if action != "new":
-            raise ValueError("Claw history is read-only; resume/fork/branch/goto route switching is not supported")
-        if session_id or branch_id or index != -1:
-            raise ValueError("New context cannot select a historical session, branch or checkpoint")
-        active = self.transcript_store.get_active_session(self.group.id)
-        if (active.session_id if active is not None else "") != expected_session:
-            raise ValueError("Active context changed; refresh before creating a new context")
-        if not alive():
-            raise asyncio.CancelledError
-        self.reset_session()
 
     def reset_session(self) -> None:
         """Synchronous composition only; application reset uses reset_context."""
@@ -609,17 +591,21 @@ class GroupRuntime:
     # -- Status queries --------------------------------------------------------
 
     def get_session_info(self) -> dict[str, Any]:
-        group_id = self.group.id
+        import json
+
+        from xdog.claw.core.persistence.session_status import read
+
         info: dict[str, Any] = {"workspace_dir": str(self.workspace_dir.absolute())}
-        meta = self.transcript_store.get_active_session(group_id)
+        data = read(self.transcript_store, self.group.id)
+        meta = data.meta
         if meta:
             info["session_id"] = meta.session_id
             info["turn_count"] = meta.turn_count
             info["session_name"] = meta.label
-            transcript = self.transcript_store.load_transcript(meta.session_id)
             info["history_format"] = 2
-            info["history"] = _display_history_entries(transcript, group_id)
-            info["usage"] = _sum_transcript_usage(transcript)
+            info["history_scope"] = 'group'
+            info["history"] = json.loads(data.history_json)
+            info["usage"] = dict(data.usage)
         if self.model:
             info["model"] = self.model
             model = self.image_model_info()
@@ -650,7 +636,7 @@ class GroupRuntime:
         info: dict[str, Any] = {'workspace_dir': workspace}
         if data.meta is not None:
             info.update(session_id=data.meta.session_id, turn_count=data.meta.turn_count,
-                        session_name=data.meta.label, history_format=2,
+                        session_name=data.meta.label, history_format=2, history_scope='group',
                         history=json.loads(data.history_json), usage=dict(data.usage))
         if model_name:
             limits = getattr(metadata, 'vision_limits', None)
@@ -771,7 +757,9 @@ def _display_history_entries(entries: list[dict[str, Any]], group: str = '') -> 
             if not marked:
                 metadata = {}
             marked = False
-        projected['message_metadata'] = dict(metadata)
+        projected['message_metadata'] = (
+            dict(metadata) if projected['role'] != 'system' else projected.get('message_metadata', {})
+        )
         history.append(projected)
     return history
 
@@ -779,6 +767,16 @@ def _display_history_entries(entries: list[dict[str, Any]], group: str = '') -> 
 def _display_history_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
     """Build a bounded, redacted display projection from a transcript entry."""
     role = entry.get("role")
+    if role == 'custom' and entry.get('type') == 'xdog.claw.handoff.v1':
+        handoff_content = display_result(entry_text(entry))
+        data = entry['data']
+        preview = f"Context handoff · `{data['reason']}` · `{data['status']}`"
+        facts = {key: data[key] for key in ('source_session_id', 'target_session_id', 'source_digest',
+                 'source_message_count', 'reason', 'created_at', 'status', 'memory_status') if key in data}
+        return {'role': 'system', 'type': 'handoff', 'content': handoff_content, 'preview': display_result(preview),
+                'message_metadata': {'handoff': facts}}
+    if role == 'system' and entry.get('is_compaction') is True:
+        return {'role': 'system', 'type': 'compaction', 'content': display_result(entry_text(entry))}
     if role == "custom" and entry.get("type") == "xdog.session_input.v1":
         from xdog.agent.session_input import decode_input
         try:

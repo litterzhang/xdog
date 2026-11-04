@@ -73,10 +73,8 @@ def test_named_archive_is_read_only_and_current_name_survives_catalog_recovery(t
     assert next(row for row in reloaded.list_sessions('main') if row['session_id'] == named.session_id
                 )['label'] == 'Durable named session'
     (tmp_path / 'catalog.json').write_text('{broken')
-    recovered = TranscriptStore(tmp_path, owner_group='main')
-    assert recovered.get_active_session('main').label == 'Current context'
-    assert recovered.get_active_session('main').session_id == replacement.session_id
-    assert any(row['session_id'] == named.session_id for row in recovered.list_sessions('main'))
+    with pytest.raises(ValueError):
+        TranscriptStore(tmp_path, owner_group='main')
 
 
 def test_name_runtime_refuses_to_rebind_stale_cached_agent_to_a_new_disk_owner(tmp_path):

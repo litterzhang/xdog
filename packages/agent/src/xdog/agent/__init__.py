@@ -29,6 +29,7 @@ from xdog.agent.agent_loop import (
     run_agent_loop_continue,
 )
 from xdog.agent.compaction import CompactionConfig, CompactionError, CompactionResult
+from xdog.agent.context_report import ContextReport, inspect_context
 from xdog.agent.core import (
     AgentConfig,
     AgentContext,
@@ -85,6 +86,7 @@ from xdog.agent.skills import SkillRepo
 
 # -- ToolDef framework -----------------------------------------------------
 from xdog.agent.tool_def import Param, ToolDef, action
+from xdog.agent.tool_outcomes import ToolArtifact, ToolFailure
 
 # -- Built-in tools ---------------------------------------------------------
 from xdog.agent.tools import (
@@ -118,6 +120,7 @@ from xdog.agent.types import (
 )
 
 __all__ = [
+    "ContextReport", "inspect_context", "ToolArtifact", "ToolFailure",
     "ChildBackend", "ChildClient", "ChildConfig", "ChildHandle", "ChildSpec", "ParentHandle",
     "CompactionConfig",
     "CompactionError",

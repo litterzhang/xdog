@@ -208,7 +208,7 @@ async def test_native_responses_preserves_unrecognized_oversized_item_id() -> No
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_native_responses_drops_nonreplayable_legacy_reasoning_items(stream: bool) -> None:
+async def test_native_responses_preserves_opaque_old_looking_reasoning_items(stream: bool) -> None:
     provider = NativeProvider(("openai-responses",))
     original_id = "+" * 416
     legacy_id = "rs_xdog_v1_" + base64.urlsafe_b64encode(original_id.encode()).decode().rstrip("=")
@@ -233,15 +233,12 @@ async def test_native_responses_drops_nonreplayable_legacy_reasoning_items(strea
     status, _, _ = await _request(provider, "/v1/responses", body)
 
     assert status == 200
-    assert provider.requests[0][1].json() == {
-        **body,
-        "input": [body["input"][0], body["input"][2]],
-    }
+    assert provider.requests[0][1].json() == body
     assert len(body["input"]) == 3
 
 
 @pytest.mark.parametrize("original_id", ["opaque+/signed=", "+" * 40])
-async def test_native_responses_restores_replayable_legacy_reasoning_id(original_id: str) -> None:
+async def test_native_responses_does_not_restore_old_synthetic_reasoning_id(original_id: str) -> None:
     provider = NativeProvider(("openai-responses",))
     legacy_id = "rs_xdog_v1_" + base64.urlsafe_b64encode(original_id.encode()).decode().rstrip("=")
     body = {
@@ -258,10 +255,7 @@ async def test_native_responses_restores_replayable_legacy_reasoning_id(original
     status, _, _ = await _request(provider, "/v1/responses", body)
 
     assert status == 200
-    assert provider.requests[0][1].json() == {
-        **body,
-        "input": [{**body["input"][0], "id": original_id}],
-    }
+    assert provider.requests[0][1].json() == body
     assert body["input"][0]["id"] == legacy_id
 
 

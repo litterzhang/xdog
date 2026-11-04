@@ -6,7 +6,9 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 
 import httpx
+from xdog.ai.capabilities import validate_model_request
 from xdog.ai.core import BaseProvider
+from xdog.ai.failures import model_failure
 from xdog.ai.native import NativeEventStream, NativeOperation, NativeResponse, ProtocolRequest
 from xdog.ai.protocols.google_generative import GeminiDecoder, encode_context
 from xdog.ai.protocols.google_images import decode_image_response, encode_image_request
@@ -90,7 +92,7 @@ class AntigravityProvider(BaseProvider):
 
     async def request_stream(self, model: str, request: ProtocolRequest) -> NativeEventStream:
         info = self._native_model(model, request)
-        if not info.supports_streaming:
+        if info.supports_streaming is False:
             raise NotImplementedError("Model does not support streaming.")
         creds = await self._vendor.tokens.get()
         return await _transport.stream(creds, info.id.removeprefix("antigravity/"), request.json())
@@ -104,15 +106,17 @@ class AntigravityProvider(BaseProvider):
         decoder = GeminiDecoder(replace(info, id=info.id.removeprefix("antigravity/")))
 
         async def generate() -> AsyncIterator[AssistantMessageEvent]:
+            failure = model_failure()
             native: NativeEventStream | None = None
             builder = decoder.builder
             try:
                 if opts.cancel and opts.cancel.is_set():
                     raise asyncio.CancelledError
+                validate_model_request(info, context, opts)
                 body = encode_context(context, info, opts)
                 creds = await _transport.cancellable(self._vendor.tokens.get(), opts.cancel)
                 yield StartEvent(partial=builder.snapshot())
-                if info.supports_streaming:
+                if info.supports_streaming is not False:
                     native = await _transport.stream(creds, builder.model_id, body, opts.cancel)
                     async for frame in native:
                         for event in decoder.feed(frame.json()):
@@ -127,8 +131,10 @@ class AntigravityProvider(BaseProvider):
                 if not opts.cancel or not opts.cancel.is_set():
                     result.cancel()
                     raise
+                failure = model_failure(asyncio.CancelledError())
                 builder.stop_reason, builder.error_message = "aborted", "Generation cancelled."
             except Exception as exc:
+                failure = model_failure(exc, partial=bool(builder.snapshot().content))
                 builder.stop_reason = "error"
                 builder.error_message = (
                     "Antigravity network request failed." if isinstance(exc, httpx.HTTPError) else str(exc)
@@ -138,10 +144,12 @@ class AntigravityProvider(BaseProvider):
                     await native.aclose()
             builder.mark_dirty()
             message = builder.snapshot()
+            if builder.stop_reason in ("error", "aborted"):
+                message = replace(message, failure=failure)
             if not result.done():
                 result.set_result(message)
             if message.stop_reason in ("error", "aborted"):
-                yield ErrorEvent(error=message.error_message or "Generation failed.", message=message)
+                yield ErrorEvent(error=message.error_message or "Generation failed.", message=message, failure=failure)
             else:
                 yield DoneEvent(stop_reason=message.stop_reason, message=message)
 

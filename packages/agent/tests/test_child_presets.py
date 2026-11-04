@@ -6,7 +6,7 @@ from xdog.agent.child_config import ChildPresets, parse_child_start
 PRESETS = {
     "reviewer": {
         "description": "Inspect without tools",
-        "config": {"instructions": "REVIEW-INSTRUCTIONS", "tools": [], "inherit_context": False},
+        "config": {"system_prompt": "REVIEW-INSTRUCTIONS", "tools": [], "inherit_context": False},
     }
 }
 
@@ -14,13 +14,13 @@ PRESETS = {
 def test_preset_resolution_is_immutable_bounded_and_explicit_flags_override_saved_defaults():
     values = {"reviewer": {"description": "Inspect without tools", "config": {**PRESETS["reviewer"]["config"]}}}
     presets = ChildPresets(values)
-    values["reviewer"]["config"]["instructions"] = "MUTATED"
+    values["reviewer"]["config"]["system_prompt"] = "MUTATED"
     task, access, config = parse_child_start("--preset reviewer --label custom task", presets)
     assert task == "task" and access == "read-only" and config.preset == "reviewer" and config.label == "custom"
-    assert config.instructions == "REVIEW-INSTRUCTIONS" and config.tools == () and not config.inherit_context
+    assert config.system_prompt == "REVIEW-INSTRUCTIONS" and config.tools == () and not config.inherit_context
     snapshot = presets.snapshot()
-    snapshot[0]["config"]["instructions"] = "MUTATED-SNAPSHOT"
-    assert presets.resolve({"preset": "reviewer"}).instructions == "REVIEW-INSTRUCTIONS"
+    snapshot[0]["config"]["system_prompt"] = "MUTATED-SNAPSHOT"
+    assert presets.resolve({"preset": "reviewer"}).system_prompt == "REVIEW-INSTRUCTIONS"
     assert ChildPresets.from_snapshot(presets.snapshot()).resolve({"preset": "reviewer"}) == presets.resolve(
         {"preset": "reviewer"}
     )

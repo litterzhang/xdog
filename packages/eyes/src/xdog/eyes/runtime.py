@@ -15,6 +15,7 @@ from dataclasses import replace
 from typing import Any
 
 from xdog.eyes.local_control import (
+    CONTROL_VERSION,
     MAX_FRAME,
     ControlError,
     JsonValue,
@@ -59,7 +60,7 @@ class DaemonRuntime:
     async def dispatch(self, value: object) -> tuple[str, dict[str, JsonValue]]:
         row = object_value(value, allowed={'version', 'generation', 'action', 'body'},
                            required={'version', 'generation', 'action', 'body'})
-        if type(row['version']) is not int or row['version'] != 1:
+        if type(row['version']) is not int or row['version'] != CONTROL_VERSION:
             raise ControlError('Unsupported Eyes control version')
         action, generation = text(row['action']), text(row['generation'], empty=True)
         if generation != self.location.generation and not (action == 'hello' and generation == ''):
@@ -113,8 +114,8 @@ class DaemonRuntime:
                         shutdown = frame.get('action') == 'daemon-stop' and body.get('shutdown') is True
                     except (ValueError, RuntimeError, OSError, ImportError) as exc:
                         status, body = 'rejected', {'error': str(exc)[:2048]}
-                    writer.write(encode_frame({'version': 1, 'generation': self.location.generation,
-                        'cwd': str(self.location.cwd), 'status': status, 'body': body}))
+                    writer.write(encode_frame({'version': CONTROL_VERSION, 'generation': self.location.generation,
+                        'directory': str(self.location.directory), 'status': status, 'body': body}))
                     await writer.drain()
             except (ValueError, OSError, RuntimeError, ImportError, TimeoutError):
                 pass

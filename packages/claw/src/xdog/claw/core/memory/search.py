@@ -155,7 +155,7 @@ class HybridMemorySearch:
 
 
 # ---------------------------------------------------------------------------
-# Shared scoring functions (kept as module-level for backward compat)
+# Shared scoring functions used by the search pipeline
 # ---------------------------------------------------------------------------
 
 def reciprocal_rank_fusion(

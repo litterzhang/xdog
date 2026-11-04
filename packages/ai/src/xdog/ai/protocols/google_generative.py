@@ -99,7 +99,7 @@ def encode_context(context: Context, model: Model, options: StreamOptions) -> di
         body["generationConfig"] = generation
     tools: list[dict[str, Any]] = []
     if context.tools:
-        if not model.supports_tool_calls:
+        if model.supports_tool_calls is False:
             raise ValueError(f"Model {model.id} does not support tool calls.")
         tools.append({"functionDeclarations": [
             {"name": tool.name, "description": tool.description, "parameters": tool.parameters}

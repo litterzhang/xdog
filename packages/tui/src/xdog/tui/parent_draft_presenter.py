@@ -52,7 +52,7 @@ class ParentDraftPresenter:
         try:
             if args.strip() == 'save':
                 self.show_save()
-            elif args.strip().partition(' ')[0] in {'restore', 'saved'}:
+            elif args.strip().partition(' ')[0] == 'restore':
                 self.begin()
                 panel = ParentDraftPanel(lambda: (), lambda *_: None, self.close,
                                          context=self.drafts.context(), mode='loading')

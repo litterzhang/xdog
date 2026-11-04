@@ -202,30 +202,20 @@ async def test_offloop_work_is_owned_and_rechecks_owner_after_read(tmp_path, mon
         await service.close()
 
 
-async def test_existing_v3_without_time_columns_keeps_null_history_and_new_attempts_work(tmp_path):
+async def test_old_input_database_schema_is_rejected_without_alter_or_replay(tmp_path):
     store, service, _, host = await owner(tmp_path)
-    old = await started(store, host._scope, 'legacy')
+    await started(store, host._scope, 'old')
     path = store.path
     await service.close()
-    # Exact pre-extension v3 schema: no historical timestamps are available.
     with sqlite3.connect(path) as db:
         db.execute('ALTER TABLE attempts DROP COLUMN started_at')
         db.execute('ALTER TABLE attempts DROP COLUMN settled_at')
-    store, service, _, host = await owner(tmp_path)
-    try:
-        assert await host.latest_execution() == {
-            'availability': 'unavailable', 'reason': 'legacy_execution_metadata_missing'}
-        attempts = await store.attempts(host._scope, 'legacy')
-        assert attempts[0].attempt_id == old.attempt_id
-        assert attempts[0].started_at is None and attempts[0].settled_at is None
-        fresh = await started(store, host._scope, 'new', 'failed')
-        fact = await host.latest_execution()
-        assert fact['execution_id'] == fresh.attempt_id and fact['status'] == 'failed'
-        assert fact['settled_at'] >= fact['started_at'] > 0
-        old_again = (await store.attempts(host._scope, 'legacy'))[0]
-        assert old_again.started_at is None and old_again.settled_at is None
-    finally:
-        await service.close()
+    with pytest.raises(ValueError, match='Unsupported input.*schema'):
+        await owner(tmp_path)
+    with sqlite3.connect(path) as db:
+        columns = {row[1] for row in db.execute('PRAGMA table_info(attempts)')}
+        assert not {'started_at', 'settled_at'} & columns
+
 
 
 @pytest.mark.parametrize('fail', [False, True])

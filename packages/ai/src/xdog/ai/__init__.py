@@ -11,7 +11,9 @@ Usage::
 """
 
 from xdog.ai.api import load, login, provider
+from xdog.ai.capabilities import validate_model_request
 from xdog.ai.core import AuthResult, BaseProvider
+from xdog.ai.failures import ModelCapabilityError, ModelFailure, model_failure
 from xdog.ai.native import (
     NativeEventStream,
     NativeHTTPError,
@@ -63,6 +65,7 @@ from xdog.ai.utils.event_stream import EventStream
 __all__ = [
     # API
     "provider", "load", "login",
+    "validate_model_request", "ModelCapabilityError", "ModelFailure", "model_failure",
     # Interfaces
     "BaseProvider", "AuthResult", "EventStream",
     # Native protocol transport

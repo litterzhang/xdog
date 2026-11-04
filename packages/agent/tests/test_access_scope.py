@@ -42,23 +42,21 @@ def test_invalid_new_access_fails_closed(bad):
         AccessState.from_dict(bad)
 
 
-@pytest.mark.parametrize('bad', [None, [], {'mode': [], 'revision': 1},
-    {'mode': 'other', 'revision': 0}, {'mode': 'planning', 'revision': True},
-    {'mode': 'planning', 'revision': 1, 'objective': ''},
-    {'mode': 'planning', 'revision': 1, 'objective': 'x', 'steps': [{'description': 'x', 'status': []}]}])
-def test_malformed_new_or_legacy_never_falls_back_to_writable(bad):
+@pytest.mark.parametrize('bad', [None, [], {}, {'read_only': 1, 'revision': 1}])
+def test_missing_or_invalid_access_never_falls_back_to_old_plans(bad):
     with pytest.raises(ValueError):
-        AccessState.saved({'access': bad, 'plan': {'mode': 'off', 'revision': 0}})
-    if bad is not None:
+        AccessState.saved({'access': bad})
+    with pytest.raises(ValueError):
+        AccessState.saved({'plan': {'mode': 'off', 'revision': 0}})
+
+
+
+def test_retired_access_record_fields_are_rejected_even_with_current_access():
+    for key in ('plan', 'legacy_plan'):
         with pytest.raises(ValueError):
-            AccessState.legacy(bad)
+            AccessState.saved({key: None, 'access': {'read_only': False, 'revision': 0}})
+    assert not hasattr(AccessState, 'legacy')
 
-
-def test_legacy_planning_read_only_and_explicit_new_release_wins():
-    old = {'mode': 'planning', 'revision': 4, 'objective': 'Investigate', 'steps': []}
-    assert AccessState.saved({'plan': old}) == AccessState(True, 4)
-    assert AccessState.saved({'plan': old, 'access': {'read_only': False, 'revision': 5}}) == AccessState(False, 5)
-    assert AccessState.legacy({'mode': 'executing', 'revision': 2, 'objective': 'Act'}) == AccessState(False, 2)
 
 
 @pytest.mark.parametrize(('name', 'args', 'safe'), [('current_time', {}, True),

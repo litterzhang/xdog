@@ -28,12 +28,12 @@ workspace) and import its library. Pure component rendering needs no terminal
 session or network:
 
 ```python
-from xdog.tui import visible_width
+from xdog.tui import string_width
 from xdog.tui.components import Text
 
 component = Text("Hello, 终端", padding_x=0, padding_y=0)
 lines = component.render(20)
-assert all(visible_width(line) <= 20 for line in lines)
+assert all(string_width(line) <= 20 for line in lines)
 print("\n".join(lines))
 ```
 

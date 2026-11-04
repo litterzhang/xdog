@@ -26,7 +26,7 @@ class TestChildConfig:
 
             agent = Agent(
                 stream,
-                config=AgentConfig(model="test/dummy", system_prompt=child_prompt(parent_prompt, spec)),
+                config=AgentConfig(model="test/dummy", system_prompt=child_prompt(spec)),
                 tools=[AgentTool(name="read", execute=execute), AgentTool(name="write", execute=execute)],
             )
             return agent
@@ -36,12 +36,11 @@ class TestChildConfig:
         try:
             config = {
                 "label": "Reviewer",
-                "instructions": "HISTORICAL-INSTRUCTIONS",
                 "system_prompt": "CHILD-SYSTEM",
                 "tools": ["read"],
                 "inherit_context": False,
             }
-            child = await owner.start("task", config=config)
+            child = await owner.start("TASK KNOWLEDGE", config=config)
             result = await owner.control("wait", child)
             assert result["status"] == "completed" and result["config"]["label"] == "Reviewer"
             assert [tool.name for tool in contexts[0].tools] == ["read"] and limits == [None]
@@ -51,7 +50,7 @@ class TestChildConfig:
             assert len(contexts[0].messages) == 1
             assert contexts[0].messages[0].role == "user"
             first_user = contexts[0].messages[0].content[0].text
-            assert first_user == "Task materials:\nHISTORICAL-INSTRUCTIONS\n\nTask:\ntask"
+            assert first_user == "TASK KNOWLEDGE"
             assert result["messages"][0]["content"][0]["text"] == first_user
             assert parent_prompt == "PARENT-RESTRICTIONS"
             restored = runtime_factory(factory, records=store.load())

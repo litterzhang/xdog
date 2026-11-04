@@ -49,7 +49,7 @@ async def test_rotation_writes_real_daily_memory_with_selected_model(tmp_path, p
     try:
         draft = await prepare(runtime, meta, reason, session if previous_live else None, stream)
         assert draft.memory_status == 'checked'
-        assert draft.summary
+        assert not draft.summary  # Short context retains original evidence, not a second model recap.
         daily = runtime.workspace_dir / 'memory' / f'{datetime.date.today().isoformat()}.md'
         assert '用户确定仅删除' in daily.read_text()
         assert all(model == 'offline/selected' and options.thinking == 'high' for model, _, options in contexts)
@@ -110,7 +110,7 @@ async def test_maintenance_failure_preserves_handoff_and_cancel_propagates(tmp_p
         else:
             draft = await prepare(runtime, meta, 'idle', None, stream)
             assert draft.memory_status == 'failed'
-            assert draft.recent and draft.summary
+            assert draft.recent and not draft.summary
         assert runtime.transcript_store.get_active_session(runtime.group.id) == meta
     finally:
         await close(runtime)

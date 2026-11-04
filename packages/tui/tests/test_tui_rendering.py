@@ -333,14 +333,14 @@ def test_non_capturing_overlay_keeps_base_focus() -> None:
 
 
 def test_overlay_composites_by_display_cells_and_clears_whole_footprint() -> None:
-    from xdog.tui.utils import strip_ansi, visible_width
+    from xdog.tui.utils import string_width, strip_ansi
     tui = TUI()
     tui.show_overlay(_MutableLines(["X"]), OverlayOptions(width=4, row=0, col=3))
     base = "\x1b[31m界👩‍💻éabcdefgh\x1b[0m"
     row = tui._composite_overlays([base], 14, 1)[0]
     # The joined emoji crosses column 3, so its uncovered cell becomes a space.
     assert strip_ansi(row) == "界 X   cdefgh "
-    assert visible_width(row) == 14
+    assert string_width(row) == 14
     assert "\x1b[31m" in row
     assert "\x1b[0m" in row
 
@@ -350,9 +350,9 @@ def test_overlay_margin_and_height_are_clamped_to_tiny_terminal() -> None:
     dialog = _MutableLines(["too wide"] * 8)
     tui.show_overlay(dialog, OverlayOptions(width=20, min_width=10, margin=100, row=50, col=50))
     rows = tui._composite_overlays(["abc"], 3, 2)
-    from xdog.tui.utils import visible_width
+    from xdog.tui.utils import string_width
     assert len(rows) <= 2
-    assert all(visible_width(row) <= 3 for row in rows)
+    assert all(string_width(row) <= 3 for row in rows)
 
 
 def test_non_capturing_overlay_hides_only_a_cursor_it_occludes(monkeypatch) -> None:

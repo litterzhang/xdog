@@ -78,10 +78,7 @@ async def test_copied_tool_and_mismatched_spec_scope_are_not_delegation_authorit
         await close(runtime, parent)
 
 
-@pytest.mark.parametrize('legacy', [False, True])
-async def test_question_fields_never_expand_child_schema_or_original_authority(tmp_path, monkeypatch, legacy):
-    import hashlib
-    import json
+async def test_question_fields_never_expand_child_schema_or_original_authority(tmp_path, monkeypatch):
 
     from jsonschema import Draft202012Validator
     from xdog.skills.goal.child_tools import child_tool_effect
@@ -96,21 +93,9 @@ async def test_question_fields_never_expand_child_schema_or_original_authority(t
         child = await runtime.delegate_child_tool(runtime.tools[0], spec(scope), scope)
         schema_before = json_text(child.parameters)
         waiting = await runtime.service.change('wait', **QUESTION)
-        if legacy:
-            def strip_question(db):
-                for table in ('goals', 'revisions'):
-                    for row in db.execute(f'SELECT * FROM {table}').fetchall():
-                        data = json.loads(row['payload'])
-                        for key in QUESTION:
-                            data.pop(key)
-                        payload = json_text(data)
-                        db.execute(f'UPDATE {table} SET payload=?,digest=? WHERE ' +
-                                   ('id=? AND version=?' if table == 'goals' else 'goal_id=? AND version=?'),
-                                   (payload, hashlib.sha256(payload.encode()).hexdigest(), goal.id, row['version']))
-            await runtime.service.store.database.disk(strip_question)
         original = await runtime.service.current()
         assert original.status == 'waiting' and original.wait_for == 'user'
-        assert bool(original.question) is not legacy
+        assert original.question
         delegated = await runtime.delegate_child_tool(runtime.tools[0], spec(scope), scope)
         assert json_text(delegated.parameters) == schema_before
         validator = Draft202012Validator(delegated.parameters)

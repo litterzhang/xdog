@@ -43,7 +43,7 @@ def native_mcp(request, tmp_path, monkeypatch):
                                     "completion_cancel", "resource_completion_preview", "unknown-operation"])
 def test_retired_picker_dispatch_and_reply_leave_active_native_read_untouched(native_mcp, action):
     host, ui, panel, sent, session, calls = native_mcp
-    original = McpDocument("fixture", "resource", "uri", (McpBlock("text", "original"),))
+    original = McpDocument("fixture", "resource", "uri", (McpBlock("text", "original", content_type="text"),))
     ui._mcp_document = original
     ui._mcp_active, ui._mcp_action = "in-flight-read", "read"
     panel._busy = True
@@ -52,7 +52,8 @@ def test_retired_picker_dispatch_and_reply_leave_active_native_read_untouched(na
         ui._mcp_cancel = threading.Event()
         sequence = ui._mcp_sequence
     ui._mcp_send(action, "fixture", "review", {"topic": "untrusted"})
-    ui._mcp_publish(action, McpDocument("fixture", "resource", "stale", (McpBlock("text", "late"),)))
+    ui._mcp_publish(action, McpDocument("fixture", "resource", "stale", (
+        McpBlock("text", "late", content_type="text"),)))
     assert ui._mcp_active == "in-flight-read" and ui._mcp_action == "read"
     assert panel._busy and panel._mode == "servers" and panel._preview is None
     assert ui._mcp_document is original and sent == before and not calls
@@ -72,7 +73,7 @@ def test_native_prompt_json_retrieval_preserves_parent_draft_without_model_input
         panel.handle_input(event)
     assert panel._mode == "arguments" and not hasattr(panel, "completion")
     if host == "coding":
-        document = McpDocument("fixture", "prompt", "review", (McpBlock("text", "untrusted"),))
+        document = McpDocument("fixture", "prompt", "review", (McpBlock("text", "untrusted", content_type="text"),))
         with patch.object(session.mcp, "prompt", new_callable=AsyncMock, return_value=document) as retrieve:
             panel.handle_input(KeyEvent("enter"))
             wait_ui(ui, lambda: not panel._busy)

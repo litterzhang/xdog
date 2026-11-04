@@ -190,7 +190,6 @@ class AgentSession:
     session_manager: SessionManager
     settings: SettingsManager
     tool_repo: ToolRepo | None
-    bash: Any  # kept for backward compat, may be None
     working_dir: Path
     context_window: int = MAX_CONTEXT_TOKENS
     max_prompt_tokens: int = 0
@@ -978,7 +977,17 @@ class AgentSession:
             if controller.owns_current_task:
                 if not self.agent.is_idle:
                     raise RuntimeError("Cannot recursively prompt an active agent")
-                return await self._execute_message(user_text, images=images, input_origin=input_origin)
+                from xdog.agent.session_input import SessionInput, decode_input
+                from xdog.coding.core.sessions.batches import TurnInput
+
+                if input_origin == 'session_input':
+                    import json
+                    item = TurnInput(decode_input(json.loads(user_text)), images=images, input_origin=input_origin)
+                else:
+                    value = SessionInput(uuid.uuid4().hex, 'human' if input_origin == 'user' else 'automatic',
+                                         'coding', user_text if user_text.strip() else '[Image/context input]', (), {})
+                    item = TurnInput(value, images=images, input_origin=input_origin, raw_text=user_text)
+                return await self._execute_messages((item,), batch_id=uuid.uuid4().hex)
             value = SessionInput(uuid.uuid4().hex, "human" if input_origin == "user" else "automatic",
                                  "coding", user_text if user_text.strip() else "[Image/context input]", (), {})
             ticket = controller.submit(value, peer_id="local-sdk", images=images,
@@ -1004,20 +1013,6 @@ class AgentSession:
                 if closing is not None:
                     await asyncio.shield(asyncio.wrap_future(closing))
 
-    async def _execute_message(self, user_text: str, *, images: tuple[ImageContent, ...] = (),
-                               input_origin: str = 'user') -> AssistantMessage | None:
-        """Singleton compatibility entry into the same batch lifecycle."""
-        from xdog.agent.session_input import SessionInput, decode_input
-        from xdog.coding.core.sessions.batches import TurnInput
-
-        if input_origin == 'session_input':
-            import json
-            item = TurnInput(decode_input(json.loads(user_text)), images=images, input_origin=input_origin)
-        else:
-            value = SessionInput(uuid.uuid4().hex, 'human' if input_origin == 'user' else 'automatic',
-                                 'coding', user_text if user_text.strip() else '[Image/context input]', (), {})
-            item = TurnInput(value, images=images, input_origin=input_origin, raw_text=user_text)
-        return await self._execute_messages((item,), batch_id=uuid.uuid4().hex)
 
     async def _execute_messages(self, inputs: tuple[TurnInput, ...], *, batch_id: str) -> AssistantMessage | None:
         """Prepare independent input messages and execute exactly one shared Agent turn."""

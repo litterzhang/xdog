@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from xdog.flow.loader import parse_workflow
 from xdog.flow.models import NodeDef
 from xdog.flow.runners import StubRunner
@@ -71,7 +72,7 @@ async def test_the_stub_runner_produces_a_session_at_all() -> None:
     session = await _turn(runner, NodeDef(id="a"), user_prompt="what is it?")
 
     assert _texts(session) == ["what is it?", "the answer is 42"]
-    assert session["system_prompt"] == "be terse"
+    assert session["base_system_prompt"] == "be terse"
 
 
 async def test_a_child_turn_is_appended_to_the_inherited_history() -> None:
@@ -209,9 +210,8 @@ async def test_a_resumed_run_still_has_the_parent_session() -> None:
         StubRunner.run = original  # type: ignore[method-assign]
 
 
-async def test_a_checkpoint_written_before_inherit_existed_still_resumes() -> None:
-    """The seven-key schema predates this feature. Refusing it would strand
-    every run in flight at upgrade time, for a field they never needed."""
+async def test_unversioned_checkpoint_is_rejected_without_resuming() -> None:
+    """Unpinned old executable state must not be silently adopted."""
     import json
     import tempfile
     from pathlib import Path
@@ -230,14 +230,15 @@ async def test_a_checkpoint_written_before_inherit_existed_still_resumes() -> No
         "tokens_used": 0,
     }), encoding="utf-8")
 
-    result = await execute(
-        parse_workflow(_inheriting_workflow()),
-        stubs=_Recorder({"a": "x", "b": "y"}),
-        checkpoint=JSONFileCheckpointStore(directory),
-        run_id="old",
-    )
+    from xdog.flow.executor import WorkflowExecutionError
 
-    assert not result.runtime["failed"], "the resumed run should complete"
+    with pytest.raises(WorkflowExecutionError, match="current schema"):
+        await execute(
+            parse_workflow(_inheriting_workflow()),
+            stubs=_Recorder({"a": "x", "b": "y"}),
+            checkpoint=JSONFileCheckpointStore(directory),
+            run_id="old",
+        )
 
 
 async def test_a_node_with_no_incoming_data_can_still_recall_the_parent_turn() -> None:
@@ -284,3 +285,17 @@ async def test_a_node_with_no_incoming_data_can_still_recall_the_parent_turn() -
 
     # No edge feeds `recall` any port value, so its whole context is inherited.
     assert "NOUN=brumation NUMBER=407" in _texts(seen["recall"])
+
+
+@pytest.mark.parametrize('session', [{}, {'messages': []}])
+@pytest.mark.parametrize('sink', [None, {}])
+async def test_stub_rejects_noncanonical_inheritance_before_callback(session, sink):
+    from types import SimpleNamespace
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('A malformed inherited snapshot must not reach even a stub callback')
+    runner = StubRunner(SimpleNamespace(agent=forbidden))
+    with pytest.raises(ValueError, match='missing fields'):
+        await runner.run(NodeDef(id='test'), system_prompt='', user_prompt='test', model='offline',
+                         timeout=30, inputs={}, step=0, fan_index=None, session=session, session_sink=sink)
+    assert sink is None or sink == {}

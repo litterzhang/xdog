@@ -195,7 +195,9 @@ async def test_native_inspection_cancel_does_not_abort_another_peer_execution(co
     runtime.start()
     inspection = None
     try:
-        await asyncio.wait_for(started.wait(),2)
+        # Owner capability/daemon cold startup is setup, not the inspection
+        # cancellation latency asserted below. Wait for the actual model entry.
+        await asyncio.wait_for(started.wait(),10)
         with monkeypatch.context() as scoped:
             scoped.setattr(store,'records',slow_inspection)
             inspection = asyncio.create_task(inbox_action(coding_session,'list'))

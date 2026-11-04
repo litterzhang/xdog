@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 
+from xdog.ai.failures import ModelFailure
 from xdog.ai.types import AssistantMessage, AssistantMessageEvent, DoneEvent, ErrorEvent
 from xdog.ai.utils.event_stream import EventStream
 
@@ -32,6 +33,7 @@ def message_stream(source: Callable[[], AsyncIterator[AssistantMessageEvent]]) -
             result.set_result(AssistantMessage(
                 content=(), stop_reason='error',
                 error_message='Empty stream' if last is None else 'Stream ended without done event',
+                failure=ModelFailure('protocol', partial=last is not None),
             ))
 
     return EventStream.from_async_generator(generate(), result)

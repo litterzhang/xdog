@@ -14,6 +14,7 @@ from typing import TypeAlias, cast
 
 JsonValue: TypeAlias = None | bool | int | float | str | list['JsonValue'] | dict[str, 'JsonValue']
 MAX_FRAME = 1024 * 1024
+CONTROL_VERSION = 2
 
 
 class ControlError(ValueError):
@@ -25,7 +26,6 @@ class RuntimeLocation:
     directory: Path
     socket: Path
     generation: str
-    cwd: Path  # Wire namespace retained for compatibility; always the daemon directory, never a project.
 
 
 def private_directory(path: Path) -> Path:
@@ -60,13 +60,12 @@ def daemon_location(directory: Path | None = None) -> RuntimeLocation:
         directory = Path(os.environ['XDOG_EYES_RUNTIME_DIR'])
     data = Path(os.environ.get('XDG_DATA_HOME', str(Path.home() / '.local' / 'share')))
     root = private_directory(directory if directory is not None else data / 'xdog' / 'eyes')
-    return RuntimeLocation(root, root / 'eyes.sock', '', root)
+    return RuntimeLocation(root, root / 'eyes.sock', '')
 
 
 def validate_location(location: RuntimeLocation) -> None:
     expected = daemon_location(location.directory)
-    if (location.directory != expected.directory or location.socket != expected.socket
-            or location.cwd != location.directory):
+    if (location.directory != expected.directory or location.socket != expected.socket):
         raise ControlError('Eyes control address and namespace must match its daemon directory')
     if location.generation and not re.fullmatch('[0-9a-f]{32}', location.generation):
         raise ControlError('Invalid Eyes runtime generation')
@@ -153,9 +152,9 @@ def read_location(location: RuntimeLocation) -> RuntimeLocation:
         if len(data) > 4096:
             raise ControlError('Eyes owner record exceeds capacity')
         row = decode_frame(data)
-        if (set(row) != {'version', 'generation', 'cwd', 'socket', 'pid'}
-                or type(row['version']) is not int or row['version'] != 1
-                or row['cwd'] != str(location.cwd) or row['socket'] != str(location.socket)
+        if (set(row) != {'version', 'generation', 'directory', 'socket', 'pid'}
+                or type(row['version']) is not int or row['version'] != CONTROL_VERSION
+                or row['directory'] != str(location.directory) or row['socket'] != str(location.socket)
                 or type(row['pid']) is not int or row['pid'] <= 0):
             raise ControlError('Invalid Eyes owner identity')
         result = replace(location, generation=text(row['generation']))
@@ -173,8 +172,8 @@ def publish_location(location: RuntimeLocation) -> tuple[int, int]:
     fd, name = tempfile.mkstemp(prefix='.owner-', dir=location.directory)
     try:
         with os.fdopen(fd, 'wb') as stream:
-            stream.write(encode_frame({'version': 1, 'generation': location.generation,
-                'cwd': str(location.cwd), 'socket': str(location.socket), 'pid': os.getpid()}))
+            stream.write(encode_frame({'version': CONTROL_VERSION, 'generation': location.generation,
+                'directory': str(location.directory), 'socket': str(location.socket), 'pid': os.getpid()}))
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(name, path)

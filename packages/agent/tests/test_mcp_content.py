@@ -117,15 +117,19 @@ def test_empty_binary_payload_type_survives_preview_metadata_and_blocks_text_dra
         document.draft_text()
 
 
-def test_empty_resource_blob_is_not_conflated_with_empty_text_or_legacy_text():
+def test_empty_resource_blob_and_text_require_explicit_discriminators():
     from xdog.agent.mcp.context import McpBlock
     binary = resource_blocks([{'uri': 'test://empty', 'blob': '', 'mimeType': 'application/octet-stream'}])[0]
     text = resource_blocks([{'uri': 'test://empty', 'text': ''}])[0]
     assert binary.content_type == 'resource_blob' and binary.is_binary and not text.is_binary
     assert text.content_type == 'resource_text'
     assert McpDocument('peer', 'resource', 'text', (text,)).draft_text()
-    assert not McpBlock('resource', text='legacy').is_binary
-    assert McpBlock('resource', data='AA==').is_binary
+    assert not McpBlock('resource', text='typed', content_type='text').is_binary
+    assert McpBlock('resource', data='AA==', content_type='resource_blob').is_binary
+    with pytest.raises(TypeError):
+        McpBlock(**{'role': 'resource', 'text': 'old untyped document'})
+    with pytest.raises(ValueError):
+        McpBlock('resource', content_type='')
     with pytest.raises(ValueError):
         McpBlock('resource', data='AA==', content_type='text')
     with pytest.raises(ValueError):

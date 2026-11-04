@@ -62,7 +62,7 @@ class InlineLayout(Component):
 
     @property
     def children(self) -> list[Component]:
-        """Return current components in render order for compatibility."""
+        """Return current components in render order."""
         children = [self.transcript]
         if self.work is not None:
             children.append(self.work)

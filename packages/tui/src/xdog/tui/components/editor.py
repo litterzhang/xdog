@@ -484,7 +484,3 @@ class Editor(Component):
 
         self._last_was_kill = False
         return False
-
-
-# Backward compatibility
-EditorComponent = Editor

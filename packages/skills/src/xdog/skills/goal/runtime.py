@@ -4,14 +4,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from typing import Any
 
 from jsonschema import Draft202012Validator
-from xdog.agent.async_work import run_owned, settle_cleanup, wait_owned
+from xdog.agent.async_work import settle_cleanup, wait_owned
 from xdog.agent.capabilities.children import CapabilityHost
 from xdog.agent.capabilities.runtime import ParentPort
 from xdog.agent.children import ChildSpec
@@ -55,7 +54,6 @@ class GoalRuntime:
         self.automation: dict[str, Any] = {'status': 'idle'}
         self.execution_fault: dict[str, Any] | None = None
         self.delivery: dict[str, Any] = {'status': 'idle'}
-        self._legacy_paths: tuple[str, ...] = ()
         self._restore_pending = False
 
     @property
@@ -74,8 +72,6 @@ class GoalRuntime:
             root = host.storage_root / 'goals' / key
         else:
             root = host.storage_root / 'goals'
-        runtime._legacy_paths = await run_owned(lambda: tuple(str(path) for path in (
-            root / 'journal.sqlite3', host.storage_root / 'goals.json') if os.path.lexists(path)))
         store = await GoalStore.open(root / 'registry.sqlite3', runtime.owner)
         runtime.service = GoalService(store, valid=runtime._valid, on_change=runtime._changed)
         message_delivery = getattr(host, 'message_delivery', None)
@@ -83,7 +79,7 @@ class GoalRuntime:
             runtime.service.message_delivery = message_delivery
         runtime.service.info = lambda: {
             'automation': dict(runtime.automation), 'delivery': dict(runtime.delivery),
-            'execution': runtime.host.execution_snapshot(), 'legacy_storage': list(runtime._legacy_paths)}
+            'execution': runtime.host.execution_snapshot()}
         try:
             runtime._restore_pending = await store.current() is not None
             runtime._unsubscribe = host.subscribe_events(runtime._event)
@@ -569,7 +565,7 @@ class GoalRuntime:
                     'read current Goal status first. '
                     f'Goal workspace: {files.root}. Continue only if this is still your current Goal and '
                     'is active (or waiting for tasks whose changes you must inspect before resuming). '
-                    'If paused, completed, cleared or waiting for user (including historical host waits), '
+                    'If paused, completed, cleared or waiting for user, '
                     'do not continue or release that state. '
                     'For a tasks wait, inspect the changed tasks and use goal.activate with the exact goal_id, '
                     'observed version and reason only when you judge the wait condition satisfied. '
@@ -656,9 +652,7 @@ class GoalRuntime:
             goals = await self.service.list()
             facts = {'goals': [{key: asdict(goal)[key] for key in ('id', 'title', 'status', 'version')}
                                for goal in goals[offset:offset + 16]],
-                     'total': len(goals), 'next_offset': offset + 16 if offset + 16 < len(goals) else None,
-                     'legacy_storage': list(self._legacy_paths),
-                     'legacy_note': 'Legacy stores retained unchanged; no old workers/reviewers are resumed'}
+                     'total': len(goals), 'next_offset': offset + 16 if offset + 16 < len(goals) else None}
             return json_text(facts, ensure_ascii=False) if raw else format_history(facts)
         if action == 'create':
             if not rest.strip():

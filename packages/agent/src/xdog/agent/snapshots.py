@@ -32,6 +32,7 @@ from typing import Any, Literal, NoReturn, cast
 from xdog.agent.core import AgentMessage, AgentState
 from xdog.agent.messages import dict_to_message, message_to_dict
 from xdog.agent.skills.types import Skill
+from xdog.ai.failures import ModelFailure
 from xdog.ai.types import (
     AssistantMessage,
     ImageContent,
@@ -54,7 +55,6 @@ SNAPSHOT_VERSION = 1
 # Inline images are supported, but the parser is deliberately bounded.
 MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024
 _MAX_ITEMS = 500_000
-_COMPAT_ALIASES = frozenset({"system_prompt", "thinking", "temperature", "max_tokens"})
 _OPTION_KEYS = frozenset({
     "thinking", "temperature", "max_tokens", "top_p", "stop_sequences",
     "parallel_tool_calls", "verbosity", "tool_choice", "response_format",
@@ -126,18 +126,6 @@ class Snapshot:
         """
         if self.interrupted or self.interrupted_tools:
             raise ValueError("Interrupted snapshot requires host reconciliation; automatic continuation is forbidden")
-
-
-@dataclass(frozen=True)
-class LegacySnapshot:
-    """Explicit partial patch: missing keys stay missing, including option keys.
-
-    ``values`` is detached JSON suitable for the existing legacy restore path,
-    after validation. Legacy composed prefixes cannot be split into raw prefix
-    and skills reliably; this route makes no skill/compaction fidelity claim.
-    """
-
-    values: dict[str, Any]
 
 
 def _fail(path: str, message: str) -> NoReturn:
@@ -288,8 +276,7 @@ def _content(parts: Any, role: str, path: str) -> None:
             _fail(path, "unknown or invalid content codec")
 
 
-def _message(raw: Any, path: str, *, validate_custom: bool = True,
-             custom_validators: CustomValidators | None = None) -> AgentMessage:
+def _message(raw: Any, path: str, *, custom_validators: CustomValidators | None = None) -> AgentMessage:
     if type(raw) is not dict:
         _fail(path, "expected message object")
     role = raw.get("role")
@@ -298,36 +285,35 @@ def _message(raw: Any, path: str, *, validate_custom: bool = True,
         _string(raw["type"], path, nonempty=True)
         if type(raw["data"]) is not dict:
             _fail(path, "custom data must be an object")
-        if validate_custom:
-            # Fixed SDK codec, never an import selected by snapshot data. Reuse
-            # the projection's validator so malformed records cannot pass dump
-            # only to disappear/fail at the next model request.
-            from xdog.agent.extensions.context_message import TYPE, record
-            from xdog.agent.mcp.stdio import McpError
+        # Fixed SDK codec, never an import selected by snapshot data. Reuse
+        # the projection's validator so malformed records cannot pass dump
+        # only to disappear/fail at the next model request.
+        from xdog.agent.extensions.context_message import TYPE, record
+        from xdog.agent.mcp.stdio import McpError
 
-            validator = record if raw['type'] == TYPE else (custom_validators or {}).get(raw['type'])
-            if validator is None:
-                _fail(path, 'unsupported custom context codec')
-            try:
-                # Explicit host code validates a detached copy; no snapshot-named
-                # imports and no mutation of the checked historical record.
-                if raw['type'] == TYPE:
-                    record(_json_copy(raw['data']))
-                else:
-                    checked = cast(Callable[[dict[str, Any]], object], validator)(_json_copy(raw['data']))
-                    if checked is not None:
-                        if inspect.iscoroutine(checked):
-                            checked.close()
-                        raise ValueError('Host custom validators must synchronously return None or raise')
-            except (ValueError, TypeError, KeyError, McpError) as exc:
-                raise ValueError(f"{path}: invalid custom context record") from exc
+        validator = record if raw['type'] == TYPE else (custom_validators or {}).get(raw['type'])
+        if validator is None:
+            _fail(path, 'unsupported custom context codec')
+        try:
+            # Explicit host code validates a detached copy; no snapshot-named
+            # imports and no mutation of the checked historical record.
+            if raw['type'] == TYPE:
+                record(_json_copy(raw['data']))
+            else:
+                checked = cast(Callable[[dict[str, Any]], object], validator)(_json_copy(raw['data']))
+                if checked is not None:
+                    if inspect.iscoroutine(checked):
+                        checked.close()
+                    raise ValueError('Host custom validators must synchronously return None or raise')
+        except (ValueError, TypeError, KeyError, McpError) as exc:
+            raise ValueError(f"{path}: invalid custom context record") from exc
     elif role == "user":
         _object(raw, path, {"role", "content"}, {"timestamp"})
         if type(raw["content"]) is not str:
             _content(raw["content"], role, path)
     elif role == "assistant":
         _object(raw, path, {"role", "content"}, {
-            "usage", "api", "provider", "model", "response_id", "stop_reason", "error_message", "timestamp",
+            "usage", "api", "provider", "model", "response_id", "stop_reason", "error_message", "failure", "timestamp",
         })
         _content(raw["content"], role, path)
         for key in ("api", "provider", "model"):
@@ -335,6 +321,13 @@ def _message(raw: Any, path: str, *, validate_custom: bool = True,
         for key in ("response_id", "error_message"):
             _string(raw.get(key), path, nullable=True)
         _enum(raw.get("stop_reason", "stop"), path, {"stop", "length", "toolUse", "error", "aborted"})
+        failure = raw.get('failure')
+        if failure is not None:
+            _object(failure, path + '.failure', {'kind', 'status', 'code', 'partial'}, set())
+            try:
+                ModelFailure(**failure)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f'{path}: invalid model failure facts') from exc
         usage = raw.get("usage", {})
         counters = {"input", "output", "cache_read", "cache_write", "total_tokens"}
         _object(usage, path, set(), counters | {"cost"})
@@ -372,7 +365,7 @@ def _message(raw: Any, path: str, *, validate_custom: bool = True,
 
 
 def _encode_message(message: AgentMessage) -> dict[str, Any]:
-    # Prevent the permissive legacy encoder from stringifying unknown objects.
+    # Prevent the permissive message encoder from stringifying unknown objects.
     from xdog.agent.core import CustomAgentMessage
 
     if type(message) not in (UserMessage, AssistantMessage, ToolResultMessage, CustomAgentMessage):
@@ -578,8 +571,7 @@ def decode_snapshot(value: str | bytes | dict[str, Any], *,
     Incomplete pairs require interrupted recovery data covering each pending call.
     Matching completed pairs can also carry unknown/cancelled recovery records:
     an error result does not prove an external side effect was rolled back.
-    Such candidates fail ``require_resumable``. Compatibility aliases are optional
-    and checked against canonical fields; they never override them.
+    Such candidates fail ``require_resumable``. Only canonical fields are accepted.
     """
     return _decode_snapshot(_read(value), custom_validators=custom_validators)
 
@@ -590,7 +582,7 @@ def _decode_snapshot(raw: dict[str, Any], messages: tuple[AgentMessage, ...] | N
     _object(raw, "snapshot", {
         "format", "version", "messages", "base_system_prompt", "model", "options", "settings", "skills",
         "compaction", "session_id", "run_id", "run_active", "cwd", "error", "interrupted", "interrupted_tools",
-    }, _COMPAT_ALIASES)
+    })
     if raw["format"] != SNAPSHOT_FORMAT:
         _fail("format", "unknown snapshot format")
     if type(raw["version"]) is not int or raw["version"] != SNAPSHOT_VERSION:
@@ -600,13 +592,6 @@ def _decode_snapshot(raw: dict[str, Any], messages: tuple[AgentMessage, ...] | N
         _string(raw[key], key, nullable=True)
     prompt = _prompt(raw["base_system_prompt"], "base_system_prompt")
     options = _options(raw["options"])
-    if "system_prompt" in raw and _prompt(raw["system_prompt"], "system_prompt") != prompt:
-        _fail("system_prompt", "compatibility alias conflicts with base_system_prompt")
-    option_aliases = {key: raw[key] for key in ("thinking", "temperature", "max_tokens") if key in raw}
-    _options(option_aliases)
-    for key, value in option_aliases.items():
-        if value != getattr(options, key):
-            _fail(key, "compatibility alias conflicts with options")
     _object(raw["settings"], "settings", set(), set(_SETTING_VALUES))
     for key, setting in raw["settings"].items():
         _enum(setting, f"settings.{key}", _SETTING_VALUES[key])
@@ -807,10 +792,6 @@ def encode_snapshot(
         "session_id": session_id, "run_id": run_id, "run_active": run_active, "cwd": cwd, "error": state.error,
         "interrupted": interrupted, "interrupted_tools": [asdict(tool) for tool in interrupted_tools],
     }
-    # Read-only compatibility aliases for existing dump consumers. system_prompt
-    # must remain raw, never the already skill-composed AgentState prompt.
-    raw.update(system_prompt=raw["base_system_prompt"], thinking=option_data["thinking"],
-               temperature=option_data["temperature"], max_tokens=option_data["max_tokens"])
     # Decode once before returning anything, so encoder and decoder have the same
     # validation boundary. The final copy detaches nested arguments/custom data.
     if omit_messages:
@@ -818,27 +799,3 @@ def encode_snapshot(
     else:
         decode_snapshot(raw, custom_validators=custom_validators)
     return _read(raw)
-
-
-def decode_legacy_snapshot(value: str | bytes | dict[str, Any]) -> LegacySnapshot:
-    """Explicit safe subset of the old partial restore format, never auto-detected.
-
-    Preserve absent keys and ``messages=None`` (legacy clear-history semantics).
-    Unknown fields, invalid messages and unfinished pairs are rejected rather than
-    silently repaired. No attempt to infer skills from a composed system prompt.
-    Legacy custom types remain inert data for the existing host converter; this
-    compatibility route does not claim default-projection fidelity for them.
-    """
-    raw = _read(value)
-    _object(raw, "legacy", set(), {"messages", "system_prompt", "model", "thinking", "temperature", "max_tokens"})
-    if "messages" in raw and raw["messages"] is not None:
-        _list(raw["messages"], "legacy.messages")
-        messages = tuple(_message(message, "legacy.messages", validate_custom=False) for message in raw["messages"])
-        if _tool_pairs(messages):
-            _fail("legacy.messages", "unfinished tool history is not resumable")
-    if "system_prompt" in raw:
-        _prompt(raw["system_prompt"], "legacy.system_prompt")
-    if "model" in raw:
-        _string(raw["model"], "legacy.model", nullable=True)
-    _options({key: raw[key] for key in ("thinking", "temperature", "max_tokens") if key in raw})
-    return LegacySnapshot(values=raw)

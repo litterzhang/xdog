@@ -77,7 +77,7 @@ async def test_oauth_registration_is_lazy_atomic_and_old_disposer_cannot_revoke_
     declaration, bound = api.providers['local']
     assert isinstance(bound, OAuthBinding) and not calls
     assert not bound.status()['authenticated']
-    assert provider_catalog([declaration], live=True)[0]['oauth']['name'] == 'Local'
+    assert provider_catalog([declaration])[0]['oauth']['name'] == 'Local'
     original_revision = api._provider_revision
     with pytest.raises(ValueError):
         api.register_provider('local', [ROW], callback, replace=True, oauth=oauth, auth=ProviderAuth(env='EXPLICIT'))

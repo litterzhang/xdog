@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from xdog.agent import Agent, AgentConfig, AgentMessage, BeforeToolCallContext, BeforeToolCallResult, ToolRepo
-from xdog.agent.access import AccessScope, read_only_call
+from xdog.agent.access import AccessScope
 from xdog.agent.async_work import run_owned
 from xdog.agent.capabilities.children import ChildPort
 from xdog.agent.capabilities.runtime import CapabilitySet
@@ -39,7 +39,7 @@ from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.child_extensions import ChildExtensions
 from xdog.coding.core.child_runtime import CodingChildRuntime
 from xdog.coding.core.child_store import ChildStore
-from xdog.coding.core.permissions import PermissionDecision, PermissionManager, PermissionRequest
+from xdog.coding.core.permissions import PermissionDecision, PermissionManager, PermissionRequest, classify_tool_call
 
 if TYPE_CHECKING:
     from xdog.coding.core.agent_session import AgentSession
@@ -370,9 +370,14 @@ class CodingChildren:
             parent.check_tool(grant, BeforeToolCallContext(ctx.assistant_message, ctx.tool_call, ctx.args, ctx.context),
                               capability_bound=bound)
 
-        def effect(name: str, params: dict[str, Any]) -> ToolEffect | None:
+        async def effect(name: str, params: dict[str, Any]) -> ToolEffect:
             if name not in scoped:
-                return None
+                args = dict(params)
+                path = args.get("path")
+                root = agent.tool_context.get("fs_workspace")
+                if name == "filesystem" and isinstance(path, str) and root is not None and not Path(path).is_absolute():
+                    args["path"] = str(Path(root) / path)
+                return await run_owned(classify_tool_call, name, args, session.working_dir)
             actual = next(tool for tool in grant.tools if tool.name == name)
             owner = scoped_owners[name]
             if owner not in session.capability_assembly.sets or not owner.can_delegate_child_tool(actual):
@@ -381,9 +386,8 @@ class CodingChildren:
                 return ToolEffect("execute", "unknown")
             return owner.tool_effect(actual, params) or ToolEffect("execute", "unknown")
 
-        def safe_call(name: str, params: dict[str, Any]) -> bool:
-            classified = effect(name, params)
-            return classified.access == "read" if classified is not None else read_only_call(name, params)
+        async def safe_call(name: str, params: dict[str, Any]) -> bool:
+            return (await effect(name, params)).access == "read"
 
         # Provider IDs are correlation labels, never permission identities. Keep
         # each exact proxy + prepared argument object alive through finalization.
@@ -424,7 +428,7 @@ class CodingChildren:
                 manager.clear_session_rules()
                 raise ValueError("Parent access scope changed before child tool execution")
 
-        def check_effect(executor: AgentTool, call_id: str, params: dict[str, Any], *,
+        async def check_effect(executor: AgentTool, call_id: str, params: dict[str, Any], *,
                          claim: object | None = None, after_effect: bool = False) -> _EffectAdmission:
             admission = admissions.get((id(executor), id(params)))
             if admission is None:
@@ -434,8 +438,14 @@ class CodingChildren:
                 raise ValueError("Child tool permission admission is already consumed")
             check(replace(admission.context, args=params))
             check_epochs(admission)
-            safe = safe_call(admission.tool_name, params)
-            if effect(admission.tool_name, params) != admission.effect:
+            classified = await effect(admission.tool_name, params)
+            # Filesystem classification runs off-loop. Revalidate the original
+            # call/owner after that yield, immediately before executor admission.
+            check_binding(admission, executor, call_id, params)
+            check(replace(admission.context, args=params))
+            check_epochs(admission)
+            safe = classified.access == "read"
+            if classified != admission.effect:
                 raise ValueError("Delegated capability effect changed after permission admission")
             if original_permissions.mode == "deny" and not safe:
                 raise ValueError("Parent permission policy denies child tool execution")
@@ -457,15 +467,15 @@ class CodingChildren:
                             await checked
             async def invoke(call_id: str, params: dict[str, Any], cancel: asyncio.Event | None = None,
                              on_update: Any = None, *, ctx: dict[str, Any] | None = None) -> AgentToolResult:
-                admission = check_effect(protected, call_id, params)
+                admission = await check_effect(protected, call_id, params)
                 claim = object()
                 key = id(protected), id(params)
                 admissions[key] = replace(admission, claim=claim)
                 await validate(params)
-                admission = check_effect(protected, call_id, params, claim=claim)
+                admission = await check_effect(protected, call_id, params, claim=claim)
                 if skills.slugs:
                     await run_owned(parent.check_skills, skills)
-                    admission = check_effect(protected, call_id, params, claim=claim)
+                    admission = await check_effect(protected, call_id, params, claim=claim)
                 if cancel is not None and cancel.is_set():
                     raise asyncio.CancelledError
                 if tool.execute is None:
@@ -556,14 +566,14 @@ class CodingChildren:
                 def bound_call() -> bool:
                     return self.capabilities.permits(spec.id, ctx.tool_call.name, ctx.context.tools or ())
                 if (spec.access == "read-only" or session.access.state.read_only) and not (
-                        bound_call() or safe_call(ctx.tool_call.name, ctx.args)):
+                        bound_call() or await safe_call(ctx.tool_call.name, ctx.args)):
                     return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")
                 blocked = await self.extensions.pre(extension, ctx)
                 if blocked is not None:
                     return blocked
                 check(ctx)  # Parent/child hooks may have rewritten action arguments.
                 if (spec.access == "read-only" or session.access.state.read_only) and not (
-                        bound_call() or safe_call(ctx.tool_call.name, ctx.args)):
+                        bound_call() or await safe_call(ctx.tool_call.name, ctx.args)):
                     return BeforeToolCallResult(block=True, reason="Child/parent access is read-only")
                 if bound_call():
                     return None  # Actual host-bound context/report capability, not a name exemption.
@@ -581,7 +591,7 @@ class CodingChildren:
                     tool_name=ctx.tool_call.name, params_fingerprint=_argument_fingerprint(ctx.args),
                     original_fingerprint=_argument_fingerprint(ctx.tool_call.arguments), permission_revision=revision,
                     tool_selection_revision=selection_revision, access=access, access_revision=access_revision,
-                    effect=effect(ctx.tool_call.name, ctx.args))
+                    effect=await effect(ctx.tool_call.name, ctx.args))
                 check_epochs(admission)
                 result = await manager.before_tool_call(ctx, cancel, effect=admission.effect)
                 check(ctx)
@@ -592,12 +602,12 @@ class CodingChildren:
                     return BeforeToolCallResult(block=True, reason="Parent permission policy changed during approval")
                 if (result is None and approval_alive is not None and not approval_alive()
                         and session.permissions.mode != "allow-all"
-                        and not safe_call(ctx.tool_call.name, ctx.args)):
+                        and not await safe_call(ctx.tool_call.name, ctx.args)):
                     manager.clear_session_rules()
                     return BeforeToolCallResult(block=True, reason="Child approval UI owner changed during review")
-                if session.permissions.mode == "deny" and not safe_call(ctx.tool_call.name, ctx.args):
+                if session.permissions.mode == "deny" and not await safe_call(ctx.tool_call.name, ctx.args):
                     return BeforeToolCallResult(block=True, reason="Parent permission policy changed to deny")
-                if session.access.state.read_only and not safe_call(ctx.tool_call.name, ctx.args):
+                if session.access.state.read_only and not await safe_call(ctx.tool_call.name, ctx.args):
                     return BeforeToolCallResult(block=True, reason="Parent entered read-only scope during approval")
                 if result is None:
                     check(ctx)
@@ -618,7 +628,7 @@ class CodingChildren:
                     if self.capabilities.permits(spec.id, ctx.tool_call.name, ctx.context.tools or ()):
                         check(ctx)
                     else:
-                        admission = check_effect(selected_executor(ctx), ctx.tool_call.id, ctx.args,
+                        admission = await check_effect(selected_executor(ctx), ctx.tool_call.id, ctx.args,
                                                  after_effect=True)
                         if admission.call is not ctx.tool_call or admission.assistant is not ctx.assistant_message:
                             return None
@@ -683,7 +693,7 @@ class CodingChildren:
         child_stream = preserve_model_metadata(guarded, routed_stream)
         agent = Agent(child_stream, parent=parent,
             config=AgentConfig(model=selected.id,
-            system_prompt=selected.prompt(child_prompt("", spec)),
+            system_prompt=selected.prompt(child_prompt(spec)),
             tool_execution=state.tool_execution,
             context_window=selected.context_window, max_prompt_tokens=selected.max_prompt_tokens,
             supports_tool_calls=selected.supports_tool_calls, options=selected.options,

@@ -138,7 +138,7 @@ def create_goal_tool(service: GoalService, context: Callable[[], OperationContex
             'Saved atomically as data, not proof of user delivery or permission.')
     properties['until']['enum'] = ['user', 'tasks']
     properties['until']['description'] = 'wait only: user decision/material or task evidence; never host faults.'
-    properties['detail']['description'] = 'status only: opt into legacy full tasks and plan; default false.'
+    properties['detail']['description'] = 'status only: opt into full tasks and plan; default false.'
     properties['status']['description'] = 'tasks only: exact task status filter.'
     properties['content']['description'] = 'plan: supply to write; omit to read only the plan.'
     properties['offset']['description'] = 'Byte offset in the JSON snapshot; use next_query unchanged.'

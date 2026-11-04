@@ -89,7 +89,8 @@ async def test_continue_after_rotation_loads_scope_and_checks_exact_original_mes
         assert '用户限定删除对象' in daily.read_text()
         current = runtime.transcript_store.load_transcript(runtime.get_new_session_id())
         assert current[0]['data']['memory_status'] == 'checked'
-        assert current[0]['data']['status'] == 'summarized'
+        assert current[0]['data']['status'] == 'recent_only'
+        assert not current[0]['data']['summary']  # Exact short context, no expansion by a summarizer.
         assert len(normal_turns) == 3
         assert MEMORY_GUIDANCE in system_prompt_text(normal_turns[0].system_prompt)
     finally:

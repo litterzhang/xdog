@@ -184,7 +184,7 @@ def test_configured_start_requires_every_settings_page_and_resize_invalidates_re
     panel.handle_input(KeyEvent("g", ctrl=True))
     assert panel._mode == "config"
     panel.render(80)
-    panel._input.set_text(json.dumps({"label": "Reviewer", "instructions": "long settings " * 50,
+    panel._input.set_text(json.dumps({"label": "Reviewer", "system_prompt": "long settings " * 50,
                                       "tools": ["filesystem"]}))
     panel.handle_input(KeyEvent("enter"))
     assert panel._mode == "form" and panel._input.get_text() == "review task"
@@ -222,7 +222,7 @@ def test_configured_start_requires_every_settings_page_and_resize_invalidates_re
 def test_preset_picker_only_applies_draft_and_final_review_contains_full_expanded_settings():
     from xdog.agent.child_config import ChildPresets
     presets = ChildPresets({"reviewer": {"description": "Review safely", "config": {
-        "instructions": "SPECIALIST-PRESET-TEXT", "tools": [], "label": "Reviewer"}}})
+        "system_prompt": "SPECIALIST-PRESET-TEXT", "tools": [], "label": "Reviewer"}}})
     panel, actions, *_ = make()
     panel.configure = lambda value: presets.resolve(value).to_dict()
     chosen = []
@@ -439,7 +439,7 @@ def test_text_only_current_session_recovery_retains_exact_cursor_settings_and_ne
         panel._input.set_text('未发送 /quit\nCURRENT TASK')
         panel._input._cursor = 3
         panel._access = 'inherit'
-        panel._config = {'instructions': 'local editing settings', 'tools': []}
+        panel._config = {'system_prompt': 'local editing settings', 'tools': []}
         panel.back()
         before = panel._drafts['start', '']
         panel.open_drafts()

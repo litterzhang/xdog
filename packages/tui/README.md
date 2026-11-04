@@ -30,8 +30,8 @@ Standalone panels are available from `xdog.tui.components`:
 
 Panels accept data, theme functions and callbacks; they do not import Coding or
 Claw policy. Applications own permission decisions and lifecycle state, while
-`InlineLayout` only positions panels and allocates height. `PromptEditor` and
-`BoundedDetails` remain compatible aliases at their original import paths.
+`InlineLayout` only positions panels and allocates height. Use `InputPanel` and
+`DetailsPanel` directly; retired alias modules are not provided.
 
 See [terminal stability and verification](../../docs/tui-pi-parity.md) for scope,
 test commands, and platform limitations. Dedicated fullscreen applications and remote
@@ -48,12 +48,12 @@ Components return ANSI string rows; they can be rendered/tested without starting
 a terminal or making network calls:
 
 ```python
-from xdog.tui import visible_width
+from xdog.tui import string_width
 from xdog.tui.components import Text
 
 component = Text("Hello, 终端", padding_x=0, padding_y=0)
 lines = component.render(20)
-assert all(visible_width(line) <= 20 for line in lines)
+assert all(string_width(line) <= 20 for line in lines)
 print("\n".join(lines))
 component.set_text("Updated")  # Invalidates component render caches.
 assert [line.rstrip() for line in component.render(20)] == ["Updated"]
@@ -375,3 +375,13 @@ GNU Affero General Public License v3.0 or later — see
 [LICENSE](https://github.com/litterzhang/xdog/blob/main/LICENSE). Output compiled
 by `xdog-flow` is exempt; see the
 [Generated Output Exception](https://github.com/litterzhang/xdog/blob/main/LICENSE-EXCEPTION.md).
+
+## Current component interfaces
+
+Use `Box`, `Editor`, `Image`, `Input`, `Loader`, `Markdown`, `SelectList`, `Spacer`,
+`Text` and `TruncatedText` from `xdog.tui.components`; the old `*Component` aliases
+are removed. `xdog.tui.editor_component.EditorComponent` remains the distinct,
+actual editor protocol. InputPanel focus uses its `focused` property, not the old
+boolean `set_focus` alias; `TUI.set_focus(component)` is still the actual focus
+manager. Parent draft recovery uses `/draft restore [SNAPSHOT_ID]`; old `saved`
+and `saved list` aliases are not accepted.

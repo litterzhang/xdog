@@ -289,7 +289,7 @@ async def test_goal_runtime_preserves_storage_layout_and_actual_owner_scope(tmp_
         await reopened.aclose()
 
 
-async def test_group_goal_legacy_data_is_preserved_and_reported_without_execution(tmp_path):
+async def test_group_goal_ignores_old_storage_without_probing_or_execution(tmp_path):
     from unittest.mock import AsyncMock
 
     from xdog.skills.goal.runtime import provider
@@ -304,7 +304,7 @@ async def test_group_goal_legacy_data_is_preserved_and_reported_without_executio
     )
     runtime = await provider.open(host)
     try:
-        assert runtime._legacy_paths == (str(legacy),)
+        assert not hasattr(runtime, '_legacy_paths')
         assert await runtime.service.current() is None and runtime.tools == ()
         assert legacy.read_bytes() == original
         assert not (tmp_path / "goals/journal.sqlite3").exists()

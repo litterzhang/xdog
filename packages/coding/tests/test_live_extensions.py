@@ -52,7 +52,7 @@ def create(tmp_path, mode="ask", project_only=False):
                                        tools=get_default_tools(tmp_path), tool_ctx={"fs_workspace": str(tmp_path)}),
                            session_data=store.create_session(model="test/model", working_dir=tmp_path),
                            session_manager=store, settings=SettingsManager(global_path=settings, project_dir=tmp_path),
-                           working_dir=tmp_path, tool_repo=None, bash=None, permissions=PermissionManager(mode))
+                           working_dir=tmp_path, tool_repo=None, permissions=PermissionManager(mode))
     return session, calls, marker
 
 

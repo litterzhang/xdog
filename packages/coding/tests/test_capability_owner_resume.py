@@ -63,7 +63,7 @@ async def test_resumed_owner_opens_existing_goal_before_first_new_input(tmp_path
 
     restored = AgentSession(agent=Agent(no_model, config=AgentConfig(model='test/model'), skills=first.agent._skills),
         session_data=data, session_manager=first.session_manager, settings=first.settings,
-        tool_repo=None, bash=None, working_dir=tmp_path, permissions=first.permissions)
+        tool_repo=None, working_dir=tmp_path, permissions=first.permissions)
     restored.agent.replace_messages(data.messages)
     runtime = SessionRuntime(restored, bound=True)
     runtime.start(setup_pending=True)

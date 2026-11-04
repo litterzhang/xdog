@@ -160,9 +160,6 @@ class InputPanel(Component):
             self._argument_provider.invalidate()
         self._focused = focused
 
-    def set_focus(self, focused: bool) -> None:
-        """Compatibility alias for hosts that predate the focus property."""
-        self.focused = focused
 
     def get_text(self) -> str:
         return self._value

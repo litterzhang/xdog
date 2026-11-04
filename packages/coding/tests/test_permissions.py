@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from xdog.agent import AgentContext, BeforeToolCallContext
+from xdog.agent.tool_effects import ToolEffect
 from xdog.ai.types import AssistantMessage, ToolCall
 from xdog.coding.core.permissions import (
     PermissionManager,
@@ -26,15 +27,13 @@ def _ctx(name: str, arguments: dict[str, Any]) -> BeforeToolCallContext:
 
 
 def test_default_policy_classification() -> None:
-    assert not tool_call_requires_approval("ask", "current_time", {})
-    assert not tool_call_requires_approval("ask", "filesystem", {"action": "read"})
-    assert not tool_call_requires_approval("ask", "filesystem", {"action": "grep"})
-    assert tool_call_requires_approval("ask", "filesystem", {"action": "write"})
-    assert tool_call_requires_approval("ask", "filesystem", {})
-    assert tool_call_requires_approval("ask", "bash", {"command": "pwd"})
-    assert tool_call_requires_approval("ask", "extension_tool", {})
-    assert tool_call_requires_approval("ask-all", "current_time", {})
-    assert not tool_call_requires_approval("allow-all", "bash", {})
+    assert not tool_call_requires_approval('ask', ToolEffect('read', 'workspace'))
+    assert not tool_call_requires_approval('ask', ToolEffect('read', 'outside'))
+    assert tool_call_requires_approval('ask', ToolEffect('write', 'workspace'))
+    assert tool_call_requires_approval('ask', ToolEffect('execute', 'unknown'))
+    assert tool_call_requires_approval('ask', None)
+    assert tool_call_requires_approval('ask-all', ToolEffect('read', 'workspace'))
+    assert not tool_call_requires_approval('allow-all', None)
 
 
 def test_invalid_mode_fails_closed() -> None:
@@ -45,7 +44,9 @@ def test_invalid_mode_fails_closed() -> None:
 @pytest.mark.asyncio
 async def test_read_only_call_is_automatically_allowed() -> None:
     manager = PermissionManager("ask")
-    result = await manager.before_tool_call(_ctx("filesystem", {"action": "read"}))
+    result = await manager.before_tool_call(
+        _ctx("filesystem", {"action": "read"}), effect=ToolEffect("read", "workspace")
+    )
     assert result is None
 
 
@@ -155,7 +156,12 @@ async def test_deny_overrides_and_revokes_prior_exact_session_approval(name, arg
         result = await manager.before_tool_call(_ctx(name, args))
         assert result is not None and result.block
         assert len(requests) == 1 and not manager._session_rules
-        assert await manager.before_tool_call(_ctx('filesystem', {'action': 'read'})) is None
+        assert (
+            await manager.before_tool_call(
+                _ctx("filesystem", {"action": "read"}), effect=ToolEffect("read", "workspace")
+            )
+            is None
+        )
     finally:
         manager.close()
 

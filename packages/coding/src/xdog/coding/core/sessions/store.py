@@ -68,12 +68,9 @@ class InputStore:
         result = []
         identifiers: set[str] = set()
         for row in rows:
-            if (not isinstance(row, dict) or set(row) not in (
-                {"input", "branch_id", "generation", "status", "error"},
-                {"input", "branch_id", "generation", "status", "error", "batch_id"},
-                {"input", "branch_id", "generation", "status", "error", "batch_id",
-                 "start_order", "started_at", "settled_at"}
-            )):
+            if (not isinstance(row, dict) or set(row) != {
+                'input', 'branch_id', 'generation', 'status', 'error', 'batch_id',
+                'start_order', 'started_at', 'settled_at'}):
                 raise ValueError("Invalid input history record")
             if not isinstance(row["status"], str) or row["status"] not in STATES or any(
                 not isinstance(row[key], str) for key in ("branch_id", "generation", "error")
@@ -85,8 +82,8 @@ class InputStore:
             if value.id in identifiers:
                 raise ValueError("Duplicate input history identity")
             identifiers.add(value.id)
-            order, started, settled = row.get('start_order'), row.get('started_at'), row.get('settled_at')
-            if (order is not None and (type(order) is not int or not 0 <= order < 2**53)
+            order, started, settled = row['start_order'], row['started_at'], row['settled_at']
+            if (type(order) is not int or not 0 <= order < 2**53
                     or any(v is not None and (type(v) not in (int, float) or not math.isfinite(v) or v <= 0)
                            for v in (started, settled))
                     or bool(order) != (started is not None)
@@ -114,10 +111,9 @@ class InputStore:
                 'error': '\U00010000' * MAX_ERROR_CHARS if pending else row.error,
                 'batch_id': '\x01' * MAX_BATCH_BYTES if pending else row.batch_id,
             }
-            if row.start_order is not None:
-                data.update(start_order=2**53 - 1 if pending else row.start_order,
-                            started_at=1.7976931348623157e+308 if pending else row.started_at,
-                            settled_at=1.7976931348623157e+308 if pending else row.settled_at)
+            data.update(start_order=2**53 - 1 if pending else row.start_order,
+                        started_at=1.7976931348623157e+308 if pending else row.started_at,
+                        settled_at=1.7976931348623157e+308 if pending else row.settled_at)
             rows.append(data)
         return json.dumps(rows, ensure_ascii=True, allow_nan=False).encode('ascii')
 
@@ -178,11 +174,9 @@ class InputStore:
         selected = [row for row in records if row.branch_id == branch]
         started = [row for row in selected if row.start_order]
         if not started:
-            if any(row.start_order is None for row in selected):
-                return {'availability': 'unavailable', 'reason': 'legacy_execution_metadata_missing'}
             return None
         # Validate all recorded batches before selection; corruption is not a
-        # legacy/unavailable result. Ordering is never derived from intake order.
+        # unavailable result. Ordering is never derived from intake order.
         groups: dict[int, list[InputRecord]] = {}
         for row in started:
             assert row.start_order is not None

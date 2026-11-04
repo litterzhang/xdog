@@ -103,7 +103,7 @@ async def native_ui(kind):
         manager = SessionManager(data / 'sessions')
         session = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model')),
             session_data=manager.create_session(model='offline/model', working_dir=data), session_manager=manager,
-            settings=SettingsManager(global_path=settings), working_dir=data, tool_registry=None, bash=None)
+            settings=SettingsManager(global_path=settings), working_dir=data, tool_repo=None)
         ui = InteractiveMode(session)
         actual = session.mcp
     else:

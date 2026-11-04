@@ -23,7 +23,8 @@ class OwnedAdapter:
         self.calls = []
         self.available = True
         self.profiles = (Model(id='owned/first', name='First', context_window=32000, max_prompt_tokens=24000,
-            max_tokens=1000, reasoning=True, supported_efforts=('low', 'high'), input=('text', 'image'),
+            max_tokens=1000, reasoning=True, supports_tool_calls=True,
+            supported_efforts=('low', 'high'), input=('text', 'image'),
             vision_limits=VisionLimits(max_prompt_images=1)),
             Model(id='owned/second', name='Second', context_window=16000, max_prompt_tokens=8000, max_tokens=500,
                   reasoning=False, supports_tool_calls=False))
@@ -48,7 +49,7 @@ async def test_both_native_ui_catalog_canonical_id_caps_unknown_denial_no_global
         session = AgentSession(agent=Agent(adapter, config=AgentConfig(model='owned/first', context_window=32000)),
             session_data=store.create_session(working_dir=tmp_path), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_repo=None, bash=None, permissions=PermissionManager('deny'), model_info=adapter.profiles[0])
+            tool_repo=None, permissions=PermissionManager('deny'), model_info=adapter.profiles[0])
         session.set_model('owned/first')
         session.set_thinking_level('high')
         ui = InteractiveMode(session)
@@ -122,7 +123,7 @@ def test_coding_selection_save_and_unavailable_saved_navigation_leave_owner_unto
     session = AgentSession(agent=Agent(adapter, config=AgentConfig(model='owned/first')),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_repo=None, bash=None, model_info=adapter.profiles[0])
+        tool_repo=None, model_info=adapter.profiles[0])
     try:
         session.set_model('owned/first')
         session.agent.replace_messages([UserMessage(content='PRESERVED-CONTEXT'), AssistantMessage()])
@@ -204,7 +205,7 @@ def test_opaque_sdk_adapter_does_not_borrow_global_capability_metadata(tmp_path,
                                       config=AgentConfig(model='opaque/first')),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_repo=None, bash=None, model_info=OwnedAdapter().profiles[0], max_prompt_tokens=24000)
+        tool_repo=None, model_info=OwnedAdapter().profiles[0], max_prompt_tokens=24000)
     try:
         monkeypatch.setattr('xdog.ai.load',
                             lambda: (_ for _ in ()).throw(AssertionError('must not consult global catalog')))
@@ -222,7 +223,7 @@ def test_unsupported_effort_and_invalid_cached_profile_are_denied_before_selecti
     session = AgentSession(agent=Agent(adapter, config=AgentConfig(model='owned/first')),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_repo=None, bash=None, model_info=adapter.profiles[0])
+        tool_repo=None, model_info=adapter.profiles[0])
     try:
         session.set_model('first')
         session.set_thinking_level('high')

@@ -12,7 +12,6 @@ from xdog.skills.goal.service import GoalService
 from xdog.skills.goal.store import GoalStore
 from xdog.skills.goal.ui_views import GoalView
 
-from packages.skills.tests.goal.legacy import wait_goal
 from packages.skills.tests.goal.test_runtime import close, setup
 from packages.skills.tests.goal.test_service import USER, opened
 
@@ -28,10 +27,10 @@ async def test_new_user_wait_requires_all_nonempty_text_atomically(tmp_path, mis
         before_wake = await service.store.wake_state(original.id)
         values = {**QUESTION, missing: bad}
         with pytest.raises(ValueError):
-            await wait_goal(service, until='user', **values)
+            await service.change('wait', until='user', **values)
         values.pop(missing)
         with pytest.raises(ValueError, match=missing):
-            await wait_goal(service, **values)  # The default until is user, not an escape hatch.
+            await service.change('wait', **values)  # The default until is user, not an escape hatch.
         assert await service.current() == original
         assert await service.store.history(original.id) == (original,)
         assert await service.store.wake_state(original.id) == before_wake
@@ -49,11 +48,11 @@ async def test_question_state_history_and_transition_roll_back_as_one_transactio
             "BEGIN SELECT RAISE(ABORT,'injected failure'); END"))
         import sqlite3
         with pytest.raises(sqlite3.IntegrityError, match='injected'):
-            await wait_goal(service, **QUESTION)
+            await service.change('wait', **QUESTION)
         assert await service.current() == original
         assert await service.store.history(original.id) == (original,)
         await service.store.database.disk(lambda db: db.execute('DROP TRIGGER fail_wait'))
-        waiting = await wait_goal(service, **QUESTION)
+        waiting = await service.change('wait', **QUESTION)
         assert waiting.status == 'waiting' and waiting.wait_for == 'user'
         path, owner = service.store.path, service.store.owner
         await service.close()
@@ -68,61 +67,35 @@ async def test_question_state_history_and_transition_roll_back_as_one_transactio
         await service.close()
 
 
-async def test_old_v2_missing_question_reads_without_rewriting_payloads_or_digests(tmp_path):
+async def test_unknown_record_fields_are_rejected_without_rewriting_storage(tmp_path):
     service = await opened(tmp_path)
-    goal = await service.create('Old', 'Legacy waiting state', context=USER)
-    waiting = await wait_goal(service, **QUESTION)
-    def legacy(db):
-        for table in ('goals', 'revisions'):
-            for row in db.execute(f'SELECT * FROM {table}').fetchall():
-                data = json.loads(row['payload'])
-                for name in QUESTION:
-                    del data[name]
-                payload = json_text(data)
-                db.execute(f'UPDATE {table} SET payload=?,digest=? WHERE ' +
-                           ('id=? AND version=?' if table == 'goals' else 'goal_id=? AND version=?'),
-                           (payload, hashlib.sha256(payload.encode()).hexdigest(), goal.id, row['version']))
-    def snapshots(db):
-        return {table: [tuple(row) for row in db.execute(f'SELECT * FROM {table}')]
-                for table in ('goals', 'revisions', 'reminders', 'transitions')}
+    goal = await service.create('Old', 'Unsupported old shape', context=USER)
+    def corrupt(db):
+        raw = json.loads(db.execute('SELECT payload FROM goals WHERE id=?', (goal.id,)).fetchone()[0])
+        raw['unknown'] = 'not a supported field'
+        payload = json_text(raw)
+        db.execute('UPDATE goals SET payload=?, digest=? WHERE id=?',
+                   (payload, hashlib.sha256(payload.encode()).hexdigest(), goal.id))
+        return payload
     try:
-        await service.store.database.disk(legacy)
-        before = await service.store.database.disk(snapshots)
-        path, owner = service.store.path, service.store.owner
-        await service.close()
-        service = GoalService(await GoalStore.open(path, owner))
-        assert await service.current() == replace(waiting, **dict.fromkeys(QUESTION, ''))
-        from unittest.mock import AsyncMock
-        service.message_delivery = AsyncMock(return_value={'status': 'delivered', 'outputs': [{'id': 'not-ours'}]})
-        facts = await service.summary()
-        assert facts['question']['availability'] == 'not_recorded'
-        assert facts['question']['delivery']['status'] == 'unavailable'
-        text = format_status(facts)
-        for label in ('Question', 'Impact', 'Resume when'):
-            assert label + ': not recorded' in text
-        assert 'saving is not proof of delivery' in text
-        row = (await GoalView(service).read({}))['items'][0]
-        assert row['question']['id'] is None and row['question']['delivery'] == facts['question']['delivery']
-        assert row['next']['owner'] == 'user' and row['question']['text'] == ''
-        assert len(await service.store.history(goal.id)) == 2
-        assert await service.store.database.disk(snapshots) == before
-        service.message_delivery.assert_not_awaited()
-        # A new version may use the new codec; immutable historical bytes still stay untouched.
-        await service.change('activate', goal.id, version=waiting.version, reason='User chose A', context=USER)
-        after = await service.store.database.disk(snapshots)
-        assert after['revisions'][:2] == before['revisions']
+        payload = await service.store.database.disk(corrupt)
+        with pytest.raises(ValueError, match='Unsupported Goal record'):
+            await service.current()
+        assert await service.store.database.disk(lambda db: db.execute(
+            'SELECT payload FROM goals WHERE id=?', (goal.id,)).fetchone()[0]) == payload
     finally:
         await service.close()
 
 
-def test_v2_codec_accepts_only_exact_old_or_new_shape_and_complete_question():
+
+def test_v2_codec_preserves_optional_metadata_but_requires_complete_nonempty_questions():
     goal = Goal('g', 'Title', 'Outcome')
     data = json.loads(encode_goal(goal))
     for name in QUESTION:
         del data[name]
     assert decode_goal(json_text(data)) == goal
     data['question'] = 'partial'
-    with pytest.raises(ValueError, match='Unsupported'):
+    with pytest.raises(ValueError):
         decode_goal(json_text(data))
     with pytest.raises(ValueError):
         replace(goal, question='not a waiting goal', impact='impact', resume_when='answer')
@@ -133,7 +106,7 @@ async def test_clock_task_events_and_automatic_calls_never_release_user_wait(tmp
     try:
         state['state'] = 'running'
         goal = await runtime.service.create('One', 'No timer authority', context=USER)
-        waiting = await wait_goal(runtime.service, **QUESTION)
+        waiting = await runtime.service.change('wait', **QUESTION)
         await runtime.flush()
         authorized[0] = False
         state['state'] = 'idle'
@@ -158,10 +131,16 @@ async def test_clock_task_events_and_automatic_calls_never_release_user_wait(tmp
         await close(runtime, parent)
 
 
-@pytest.mark.parametrize('status,until,owner', [
-    ('active', '', 'main_agent'), ('waiting', 'tasks', 'task_workers'), ('waiting', 'host', 'host'),
-    ('waiting', 'user', 'user'), ('paused', '', 'user'), ('completed', '', 'user'),
-])
+@pytest.mark.parametrize(
+    "status,until,owner",
+    [
+        ("active", "", "main_agent"),
+        ("waiting", "tasks", "task_workers"),
+        ("waiting", "user", "user"),
+        ("paused", "", "user"),
+        ("completed", "", "user"),
+    ],
+)
 async def test_next_responsibility_and_shared_question_preview(tmp_path, status, until, owner):
     service = await opened(tmp_path)
     try:
@@ -172,7 +151,7 @@ async def test_next_responsibility_and_shared_question_preview(tmp_path, status,
             if until == 'user':
                 fields.update({name: value * 100 for name, value in QUESTION.items()})
             if status == 'waiting':
-                await wait_goal(service, **fields)
+                await service.change('wait', **fields)
             else:
                 await service.change({'paused': 'pause', 'completed': 'complete'}[status], **fields)
         facts = await service.summary()

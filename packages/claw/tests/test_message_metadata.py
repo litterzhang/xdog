@@ -10,7 +10,7 @@ from xdog.claw.core.runtime.group import _display_history_entries
 from xdog.claw.core.runtime.input_adapter import freeze_input
 from xdog.claw.core.runtime.message_metadata import enrich_history, envelope_metadata
 from xdog.claw.core.types import UserInput
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 from packages.claw.tests.test_gateway_inputs import gateway as gateway
 from packages.claw.tests.test_gateway_inputs import receive, send
@@ -66,13 +66,13 @@ def test_rendered_labels_keep_source_text_markers_and_user_background():
     log.add_user('original comment', metadata=metadata)
     log.add_assistant('reply', metadata=metadata, thinking='reason')
     output = rendered(log)
-    assert 'external_user · 身份:commenter-A · 来源:xhs · group:cats' in output
-    assert 'agent · 来源:xhs · 触发:external_user · group:cats · → xhs [未确认]' in output
-    assert 'thinking · 来源:xhs' in output
+    assert 'external_user:commenter-A · xhs' in output
+    assert 'agent · xhs → xhs [未确认] · external_user:commenter-A' in output
+    assert 'thinking · xhs' in output
     assert ' › original comment' in output and ' • reply' in output
     assert [r.body for r in log.transcript_records()] == ['original comment', 'reason', 'reply']
     for width in (1, 3, 10, 40):
-        assert all(visible_width(row) <= width for row in log.render(width))
+        assert all(string_width(row) <= width for row in log.render(width))
 
 
 def test_streamed_metadata_is_owner_bound_and_final_updates_without_duplicate_text():
@@ -111,8 +111,8 @@ def test_message_tool_receipt_displays_named_channel_not_changes_default_reply()
     log.finish_tool('post', 'message', '{"channel":"opaque-binding","channel_name":"xhs","status":"unknown"}')
     log.add_assistant('post summary', metadata=metadata)
     output = rendered(log)
-    assert 'tool · 来源:tui · 触发:admin · → xhs [未确认]' in output
-    assert 'agent · 来源:tui · 触发:admin · → tui [本地显示]' in output
+    assert 'tool · tui → xhs [未确认] · admin' in output
+    assert 'agent · tui → tui [本地显示] · admin' in output
 
 
 def test_metadata_excludes_raw_private_fields_and_terminal_controls():
@@ -127,7 +127,6 @@ def test_history_sync_completion_merges_without_losing_or_duplicating_reply():
     app = ChatApp('/tmp/unused')
     app._gateway_session_id = 'session'
     app._history_loading = True
-    app._history_format = 2
     metadata = {'input_id': 'comment', 'role': 'external_user', 'source': 'xhs', 'sender': 'A'}
     app._replay_history_entries([{'role': 'user', 'channel': 'xhs', 'content': 'comment',
                                   'message_metadata': metadata}])
@@ -177,7 +176,8 @@ async def test_live_channel_view_and_history_use_actual_identity_and_delivery(ga
         assert metadata['source'] == 'test-channel' and metadata['group'] == 'main'
         assert metadata['destinations'][0]['channel'] == 'test-channel'
         assert metadata['destinations'][0]['status'] == 'delivered'
-        history = (await app.read_session_info('main'))['history']
+        history = [row for row in (await app.read_session_info('main'))['history']
+                   if row['role'] != 'system']
         assert history[0]['message_metadata']['input_id'] == 'new-comment'
         assert history[1]['message_metadata']['destinations'] == metadata['destinations']
         assert 'recipient' not in str(metadata) and 'metadata' not in metadata
@@ -212,3 +212,52 @@ def test_system_input_uses_dot_and_is_not_human_message_or_tool_authority():
     assert ' • inspect event' in rendered(log) and ' › ' not in rendered(log)
     assert log.transcript_records()[0].role == 'system'
     assert log.transcript_records()[0].body == 'inspect event'
+
+
+def test_group_timeline_enriches_old_receipts_only_on_their_original_session(tmp_path):
+    envelope = freeze_input(UserInput(group_id='cats', channel='xhs', sender='person', content='hello'),
+                            tmp_path, message_id='old-comment', reply_mode='final')
+    record = InputRecord(envelope, 'succeeded', attempt_id='attempt', session_id='old')
+    output = OutputRecord('output', envelope, 'attempt', 0, 'binding', 'answer', 'unknown', '', '')
+    history = [{'role': 'assistant', 'session_id': session, 'content': 'answer',
+                'message_metadata': {'input_id': 'old-comment'}} for session in ('old', 'current')]
+    enrich_history(history, [record], [output], 'current')
+    assert history[0]['message_metadata']['destinations'][0]['status'] == 'unknown'
+    assert history[1]['message_metadata'] == {'input_id': 'old-comment'}
+
+
+def test_compact_headers_hide_full_identifiers_but_details_retain_original_facts():
+    sender = 'speaker-full-original-identity-123456'
+    metadata = {'role': 'external_user', 'sender': sender, 'source': 'xhs', 'session_id': 'full-session-id',
+                'input_id': 'full-input-id', 'token': 'must-not-show',
+                'destinations': [{'channel': 'xhs', 'status': 'unknown', 'output_id': 'full-output-id'}]}
+    log = ChatLog()
+    log.add_user('comment body', metadata=metadata)
+    log.add_assistant('answer body', thinking='reason body', metadata=metadata)
+    log.add_tool('message', {}, tool_call_id='full-call-id', metadata=metadata)
+    log.finish_tool('full-call-id', 'message', 'output body')
+    output = rendered(log)
+    for private in (sender, 'full-session-id', 'full-input-id', 'full-output-id', 'full-call-id', 'must-not-show'):
+        assert private not in output
+    records = log.detail_records()
+    assert [r.kind for r in records] == ['user', 'reasoning', 'assistant', 'tool']
+    for record in records:
+        assert sender in record.body and 'full-session-id' in record.body and 'full-output-id' in record.body
+        assert 'must-not-show' not in record.body
+    assert records[-1].body.startswith('output body') and 'full-call-id' in records[-1].body
+    assert [r.body for r in log.transcript_records()][0] == 'comment body'
+
+
+def test_handoff_projection_keeps_provenance_without_growing_preview():
+    from xdog.claw.channels.tui.message_metadata import details
+
+    metadata = {'role': 'system', 'source': 'history', 'handoff': {
+        'source_session_id': 'previous-original-session', 'target_session_id': 'next-original-session',
+        'source_digest': 'digest-evidence', 'source_message_count': 500, 'status': 'incomplete',
+        'memory_status': 'failed', 'token': 'private',
+    }}
+    label_text = label(clean_metadata(metadata), 'system')
+    assert label_text == 'system · history'
+    body = details(metadata)
+    assert 'previous-original-session' in body and 'digest-evidence' in body and 'incomplete' in body
+    assert 'private' not in body

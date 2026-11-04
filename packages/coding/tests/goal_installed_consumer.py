@@ -66,7 +66,7 @@ async def main():
     session = AgentSession(agent=Agent(model, config=AgentConfig(model='test/installed'),
         tools=get_default_tools(root), tool_ctx={'fs_workspace': str(root)}, skills=skills),
         session_data=manager.create_session(model='test/installed', working_dir=root), session_manager=manager,
-        settings=SettingsManager(global_path=root / 'settings.json'), tool_repo=None, bash=None,
+        settings=SettingsManager(global_path=root / 'settings.json'), tool_repo=None,
         working_dir=root, permissions=PermissionManager('allow-all'))
     try:
         assert session.capabilities.get('goal') is None

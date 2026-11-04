@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Callable
 
 from xdog.tui.tui import Component
-from xdog.tui.utils import apply_background_to_line, visible_width
+from xdog.tui.utils import apply_background_to_line, string_width
 
 
 class Box(Component):
@@ -48,8 +48,6 @@ class Box(Component):
             child.invalidate()
 
     def render(self, width: int) -> list[str]:
-        # Legacy cell-buffer model
-        # New string-based model
         return self._render_lines(width)
 
     def _render_lines(self, width: int) -> list[str]:
@@ -90,7 +88,7 @@ class Box(Component):
 
     def _apply_bg(self, line: str, width: int) -> str:
         """Apply background and pad to width."""
-        vis_len = visible_width(line)
+        vis_len = string_width(line)
         pad_needed = max(0, width - vis_len)
         padded = line + " " * pad_needed
 
@@ -101,7 +99,3 @@ class Box(Component):
     def preferred_height(self, width: int) -> int:
         lines = self._render_lines(width)
         return max(1, len(lines))
-
-
-# Backward compatibility alias
-BoxComponent = Box

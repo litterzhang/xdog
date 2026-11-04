@@ -15,7 +15,7 @@ from xdog.tui.components.transcript_panel import TranscriptPanel
 from xdog.tui.navigation import NavigationEntry, NavigationFeed, NavigationSnapshot
 from xdog.tui.transcript_browser import TranscriptRecord
 from xdog.tui.tui import CURSOR_MARKER
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 def color(code):
@@ -44,7 +44,7 @@ def test_navigation_styles_preserve_cells_rows_and_plain_mode(width):
     panel.set_panel_theme(theme())
     colored = panel.render(width)
     assert [strip_ansi(row) for row in colored] == plain
-    assert len(colored) == len(plain) and all(visible_width(row) <= width for row in colored)
+    assert len(colored) == len(plain) and all(string_width(row) <= width for row in colored)
     if plain[0] and plain[1]:
         assert '\x1b[33m' in colored[0] and '\x1b[36m' in colored[1]
     panel.set_panel_theme(PanelTheme())
@@ -98,7 +98,7 @@ def test_transcript_theme_does_not_leak_into_source_and_survives_inline_fullscre
             rows = panel.render(40)
             assert '\x1b[33m' in rows[0] and '\x1b[90m' in rows[-1]
             assert any('\x1b[36m' in row for row in rows[1:-1])
-            assert all(visible_width(row) <= 40 for row in rows)
+            assert all(string_width(row) <= 40 for row in rows)
             assert panel.records == (record,)
             panel.set_panel_theme(PanelTheme())
             assert '\x1b[' not in ''.join(panel.render(40))
@@ -130,5 +130,5 @@ def test_truncating_nested_colors_closes_style_on_native_foreground(width):
     style = PanelTheme(success=color(32))  # Native foreground itself emits no reset.
     rows = style.rows([style.success('connected') + ' metadata'], width,
                       header=False, footer=False, selection=False)
-    assert visible_width(rows[0]) <= width
+    assert string_width(rows[0]) <= width
     assert rows[0].endswith('\x1b[0m'), 'Cropping must not leave an inner style open'

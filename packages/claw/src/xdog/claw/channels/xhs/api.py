@@ -1,142 +1,177 @@
-"""Pinned xiaohongshu-mcp HTTP protocol; no Agent, channel routing or retry loop."""
+"""Optional xiaohongshu-cli SDK adapter; no HTTP backend or automatic browser login."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import importlib
 import json
-import logging
-import os
-from typing import Any
-from urllib.parse import urlsplit
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, TypeVar
 
-import httpx
+from xdog.agent.async_work import run_owned
+from xdog.claw.core.identity.models import label
 
-logger = logging.getLogger(__name__)
-_STATUS_RETRY_DELAY = 2.0
-
-
-# Backend details can contain account names, page URLs or browser diagnostics.
-# Retain a known failure stage, never arbitrary backend prose in model/tool errors.
-_REPLY_FAILURES = (
-    ('缺少 comment_id', 'missing_comment'),
-    ('回复内容不能为空', 'empty_reply'),
-    ('读取通知列表失败', 'notification_state_read'),
-    ('页面状态里没有分区', 'notification_state_missing'),
-    ('解析通知列表失败', 'notification_state_invalid'),
-    ('该评论已删除或不可见', 'comment_unavailable'),
-    ('未找到评论', 'comment_not_found'),
-    ('翻找 ', 'comment_not_found'),
-    ('通知条目渲染数', 'notification_not_rendered'),
-    ('该通知没有回复入口', 'reply_entry_missing'),
-    ('无法点击回复', 'reply_open_failed'),
-    ('回复输入框未出现', 'reply_input_missing'),
-    ('读不到回复框提示文字', 'reply_target_unreadable'),
-    ('回复对象不符', 'reply_target_mismatch'),
-    ('无法输入回复内容', 'reply_input_failed'),
-    ('未找到发送按钮', 'submit_button_missing'),
-    ('无法点击发送', 'submit_click_failed'),
-    ('回复未确认成功', 'submit_unconfirmed'),
-)
+T = TypeVar("T")
 
 
-def _backend_error(response: httpx.Response, data: bytearray) -> httpx.HTTPStatusError:
-    code, stage = 'unclassified', 'unclassified'
+class XhsUnavailable(ValueError):
+    """Safe diagnostic: SDK exception prose can contain credentials and response bodies."""
+
+
+class DependencyMissing(XhsUnavailable):
+    pass
+
+
+class LoginRequired(XhsUnavailable):
+    pass
+
+
+def require_sdk() -> Any:
     try:
-        raw = json.loads(data)
-    except (ValueError, UnicodeDecodeError):
-        raw = None
-    if isinstance(raw, dict) and raw.get('code') == 'REPLY_NOTIFICATION_FAILED':
-        code = 'REPLY_NOTIFICATION_FAILED'
-        details = raw.get('details')
-        if isinstance(details, str):
-            stage = next((name for prefix, name in _REPLY_FAILURES if details.startswith(prefix)), 'unclassified')
-    return httpx.HTTPStatusError(
-        f'XHS backend HTTP {response.status_code}; code={code}; stage={stage}. '
-        'A failed response does not prove that no platform action occurred.',
-        request=response.request, response=response)
+        return importlib.import_module('xhs_cli.client').XhsClient
+    except ImportError as exc:
+        raise DependencyMissing('XHS requires the optional dependency: install xdog-claw[xhs]') from exc
+
+
+def credential_home(data_dir: Path, group_id: str) -> Path:
+    key = hashlib.sha256(group_id.encode()).hexdigest()
+    return data_dir / 'xhs' / 'accounts' / key
+
+
+def cookie_path(home: Path) -> Path:
+    return home / '.xiaohongshu-cli' / 'cookies.json'
+
+
+def read_cookies(home: Path) -> dict[str, str]:
+    path = cookie_path(home)
+    try:
+        if path.is_symlink() or path.stat().st_size > 64 * 1024:
+            raise XhsUnavailable('Invalid XHS credentials file')
+        raw = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError as exc:
+        raise LoginRequired('XHS needs explicit login: xdog-claw channel login --xhs') from exc
+    except (OSError, ValueError) as exc:
+        raise XhsUnavailable('XHS credentials are unavailable; inspect the saved login') from exc
+    if not isinstance(raw, dict):
+        raise XhsUnavailable('Invalid XHS credentials file')
+    cookies = {key: value for key, value in raw.items() if isinstance(key, str) and isinstance(value, str)}
+    if not cookies.get('a1') or not cookies.get('web_session'):
+        raise LoginRequired('XHS saved session is incomplete; log in explicitly')
+    return cookies
+
+
+@dataclass(frozen=True)
+class Notifications:
+    items: tuple[dict[str, Any], ...]
+    truncated: bool = False
 
 
 class XhsApi:
-    def __init__(self, base_url: str, *, token_env: str = 'XHS_API_TOKEN',
-                 transport: httpx.AsyncBaseTransport | None = None) -> None:
-        target = urlsplit(base_url)
-        if (target.scheme != 'http' or target.hostname not in {'localhost', '127.0.0.1', '::1'}
-                or target.username or target.password or target.query or target.fragment
-                or target.path not in {'', '/'}):
-            raise ValueError('XHS backend must be an explicit local loopback HTTP service')
-        token = os.environ.get(token_env, '')
-        self._http = httpx.AsyncClient(base_url=base_url.rstrip('/'), timeout=120, follow_redirects=False,
-            trust_env=False, headers={'Authorization': 'Bearer ' + token} if token else {}, transport=transport)
+    def __init__(self, data_dir: Path, group_id: str, *, factory: Callable[..., Any] | None = None,
+                 home: Path | None = None) -> None:
+        self.home = home or credential_home(data_dir, group_id)
+        self._factory = factory
+        self._lock = asyncio.Lock()
+        self._closed = False
 
     async def close(self) -> None:
-        await self._http.aclose()
+        async with self._lock:
+            self._closed = True
 
-    async def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        async with self._http.stream(method, '/api/v1/' + path, **kwargs) as response:
-            if response.is_error:
-                diagnostic = bytearray()
-                async for chunk in response.aiter_bytes():
-                    if len(diagnostic) + len(chunk) > 64 * 1024:
-                        diagnostic.clear()  # Oversized/unrecognized diagnostics stay generic.
-                        break
-                    diagnostic.extend(chunk)
-                raise _backend_error(response, diagnostic)
-            response.raise_for_status()
-            data = bytearray()
-            async for chunk in response.aiter_bytes():
-                data.extend(chunk)
-                if len(data) > 2 * 1024 * 1024:
-                    raise ValueError('XHS response exceeds capacity')
-        raw = json.loads(data)
-        if not isinstance(raw, dict) or raw.get('success') is not True or not isinstance(raw.get('data'), dict):
-            raise ValueError('XHS backend did not confirm a valid response')
-        value = raw['data']
-        if set(value) == {'data'}:
-            value = value['data']
-        if not isinstance(value, dict):
-            raise ValueError('XHS backend response data must be an object')
-        return value
-
-    async def login_status(self) -> dict[str, Any]:
-        """Retry only this read; a QR challenge, reply or publish is never replayed."""
-        for attempt in range(3):
-            try:
-                return await self.request('GET', 'login/status')
-            except httpx.HTTPError as exc:
-                transient = (isinstance(exc, (httpx.TimeoutException, httpx.NetworkError))
-                    or isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {408, 500, 502, 503, 504})
-                if not transient or attempt == 2:
-                    raise
-                detail = (f'HTTP {exc.response.status_code}' if isinstance(exc, httpx.HTTPStatusError)
-                          else type(exc).__name__)
-                logger.warning('XHS login status temporarily unavailable (%s); retrying read (%s/3)',
-                               detail, attempt + 2)
-                await asyncio.sleep(_STATUS_RETRY_DELAY)
-        raise AssertionError('Unreachable login status retry state')
+    async def _call(self, operation: Callable[[Any], T]) -> T:
+        async with self._lock:
+            if self._closed:
+                raise XhsUnavailable('XHS adapter is closed')
+            def invoke() -> T:
+                factory = self._factory or require_sdk()
+                cookies = read_cookies(self.home)
+                # The SDK retries writes by default. Exactly one attempt, including
+                # replies/publishing; host output receipts own outcome-unknown recovery.
+                client = factory(cookies, timeout=30, max_retries=1)
+                try:
+                    return operation(client)
+                except Exception as exc:
+                    if type(exc).__name__ == 'SessionExpiredError':
+                        raise LoginRequired('XHS session expired; log in explicitly') from None
+                    if isinstance(exc, XhsUnavailable):
+                        raise
+                    kind = type(exc).__name__
+                    if kind in {'NeedVerifyError', 'IpBlockedError', 'SignatureError'}:
+                        raise XhsUnavailable('XHS requires manual attention: ' + kind) from None
+                    raise XhsUnavailable('XHS request failed; outcome may be unknown') from None
+                finally:
+                    try:
+                        client.close()
+                    except Exception:
+                        raise XhsUnavailable('XHS client cleanup failed; inspect before retrying') from None
+            # Cancellation settles actual synchronous work before releasing its owner.
+            return await run_owned(invoke)
 
     async def identity(self) -> tuple[str, str]:
-        from xdog.claw.core.identity.models import label
-        data = await self.login_status()
-        if data.get('is_logged_in') is not True:
-            raise ValueError('XHS backend needs an explicit account login')
-        return label(data.get('user_id'), maximum=256), label(data.get('username', ''), empty=True)
+        raw = await self._call(lambda client: client.get_self_info())
+        if not isinstance(raw, dict) or raw.get('guest') is True:
+            raise LoginRequired('XHS session is not an authenticated account')
+        basic = raw.get('basic_info', raw)
+        if not isinstance(basic, dict):
+            raise XhsUnavailable('Invalid XHS account response')
+        identifier = raw.get('user_id') or raw.get('userid') or basic.get('user_id')
+        return label(identifier, maximum=256), label(basic.get('nickname', ''), empty=True)
 
-    async def notifications(self) -> list[dict[str, Any]]:
-        data = await self.request('POST', 'notifications/list', json={'tab': 'mentions', 'limit': 200})
-        items = data.get('items')
-        if not isinstance(items, list) or len(items) > 200 or any(not isinstance(item, dict) for item in items):
-            raise ValueError('Invalid XHS notification list')
-        return items
+    async def notifications(self) -> Notifications:
+        def collect(client: Any) -> Notifications:
+            items: list[dict[str, Any]] = []
+            cursor, seen, count = '', set(), 0
+            while count < 200:
+                raw = client.get_notification_mentions(cursor=cursor, num=min(100, 200 - count))
+                if not isinstance(raw, dict) or not isinstance(raw.get('message_list'), list):
+                    raise XhsUnavailable('Invalid XHS mentions response')
+                page = raw['message_list']
+                if len(page) > 200 - count:
+                    raise XhsUnavailable('XHS mentions page exceeds capacity')
+                count += len(page)
+                for item in page:
+                    if not isinstance(item, dict):
+                        raise XhsUnavailable('Invalid XHS mention')
+                    if item.get('type') == 'mention/item':
+                        continue  # A post-only mention has no exact comment target.
+                    if item.get('type') not in {'comment/item', 'mention/comment', 'comment/comment'}:
+                        raise XhsUnavailable('Unknown XHS mention type; no reply target was guessed')
+                    user, note, comment = (item.get(key) for key in ('user_info', 'item_info', 'comment_info'))
+                    if not isinstance(user, dict) or not isinstance(note, dict) or not isinstance(comment, dict):
+                        raise XhsUnavailable('XHS comment lacks its exact sender/post/comment target')
+                    items.append({'from': {'user_id': label(user.get('userid'), maximum=256)},
+                        'feed_id': label(note.get('id'), maximum=256),
+                        'comment_id': label(comment.get('id'), maximum=256),
+                        'comment_text': label(comment.get('content'), maximum=64 * 1024)})
+                if raw.get('has_more') is not True:
+                    return Notifications(tuple(items))
+                next_cursor = raw.get('cursor')
+                if not page or not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen:
+                    raise XhsUnavailable('XHS mentions cursor did not advance')
+                seen.add(next_cursor)
+                cursor = next_cursor
+            return Notifications(tuple(items), truncated=True)
+        return await self._call(collect)
 
-    async def post(self, feed_id: str, xsec_token: str) -> dict[str, Any]:
-        from xdog.claw.core.identity.models import label
-        data = await self.request('POST', 'feeds/detail', json={
-            'feed_id': feed_id, 'xsec_token': xsec_token, 'load_all_comments': False})
-        detail = data.get('data')
-        note = detail.get('note') if isinstance(detail, dict) else None
-        if (data.get('feed_id') != feed_id or not isinstance(note, dict)
-                or note.get('noteId') != feed_id):
-            raise ValueError('XHS post response does not match the original post')
-        # Explicit public fields only: no backend tokens, comments or account diagnostics.
-        title = label(note.get('title', ''), empty=True, maximum=16 * 1024)
-        body = label(note.get('desc', ''), empty=True, maximum=64 * 1024)
-        return {'feed_id': feed_id, 'title': title, 'text': body, 'untrusted': True}
+    async def post(self, feed_id: str) -> dict[str, Any]:
+        # This public SDK method does not use its process-global note-token cache.
+        raw = await self._call(lambda client: client.get_note_from_html(feed_id))
+        if not isinstance(raw, dict) or raw.get('noteId') != feed_id:
+            raise XhsUnavailable('XHS post response does not match the original post')
+        return {'feed_id': feed_id, 'title': label(raw.get('title', ''), empty=True, maximum=16 * 1024),
+                'text': label(raw.get('desc', ''), empty=True, maximum=64 * 1024), 'untrusted': True}
+
+    async def reply(self, feed_id: str, comment_id: str, text: str) -> None:
+        await self._call(lambda client: client.reply_comment(feed_id, comment_id, text))
+
+    async def publish(self, title: str, text: str, images: list[str]) -> None:
+        def publish(client: Any) -> None:
+            identifiers = []
+            for path in images:
+                permit = client.get_upload_permit()
+                client.upload_file(permit['fileId'], permit['token'], path)
+                identifiers.append(permit['fileId'])
+            client.create_image_note(title, text, identifiers)
+        await self._call(publish)

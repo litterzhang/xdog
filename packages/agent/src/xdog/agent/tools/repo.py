@@ -57,6 +57,8 @@ class ToolRepo:
                 raise ValueError('Tool names must be nonempty text without surrounding whitespace')
             if name in names or name in self._tools:
                 raise ValueError(f'Duplicate tool name: {name}')
+            from xdog.ai.utils.validation import validate_tool_schema
+            validate_tool_schema(tool.parameters)
             names.add(name)
         entries = tuple((tool.name, object()) for tool in tools)
         self._tools.update((name, (token, tool)) for (name, token), tool in zip(entries, tools, strict=True))

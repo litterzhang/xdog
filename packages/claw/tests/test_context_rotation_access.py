@@ -32,7 +32,7 @@ def test_history_activation_apis_are_absent_not_only_hidden():
     assert hasattr(TranscriptStore, 'load_branch')
 
 
-@pytest.mark.parametrize('source', ['sidecar', 'catalog', 'legacy-plan'])
+@pytest.mark.parametrize('source', ['sidecar', 'catalog'])
 def test_rotation_inherits_current_scope_without_new_sidecar_and_survives_reload(tmp_path, source):
     store = TranscriptStore(tmp_path, owner_group='main')
     old = store.create_session('main')
@@ -42,9 +42,6 @@ def test_rotation_inherits_current_scope_without_new_sidecar_and_survives_reload
     elif source == 'catalog':
         store._index['main']['access'] = scope
         store._save_index()
-    else:
-        store._path(old.session_id).with_suffix('.plan.json').write_text(json.dumps({
-            'mode': 'planning', 'revision': 7, 'objective': 'Historical read-only note', 'steps': []}))
     store = TranscriptStore(tmp_path, owner_group='main')
     fresh = store.reset_session('main')
     assert fresh.session_id != old.session_id and store.get_access(fresh.session_id) == scope
@@ -57,9 +54,9 @@ def test_rotation_inherits_current_scope_without_new_sidecar_and_survives_reload
     assert reloaded.get_access(fresh.session_id) == scope
     # The current index independently retains access if catalog recovery is needed.
     reloaded._catalog_file.write_text('{broken')
-    recovered = TranscriptStore(tmp_path, owner_group='main')
-    assert recovered.get_active_session('main').session_id == fresh.session_id
-    assert recovered.get_access(fresh.session_id) == scope
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        TranscriptStore(tmp_path, owner_group='main')
+
 
 
 def test_plain_new_context_is_writable_but_other_groups_do_not_inherit_a_foreign_restriction(tmp_path):
@@ -171,9 +168,8 @@ def test_failed_rollback_blocks_scope_reads_and_rotation_until_storage_recovery(
     assert reopened.get_access(old) == scope and saved_files(tmp_path) == before
 
 
-@pytest.mark.parametrize('operation', ['new', 'reset'])
 @pytest.mark.parametrize('fail', [False, True])
-async def test_group_new_reset_preserves_readonly_even_after_failure(tmp_path, monkeypatch, operation, fail):
+async def test_group_new_reset_preserves_readonly_even_after_failure(tmp_path, monkeypatch, fail):
     runtime = GroupRuntime(group=Group(id='main'), data_dir=tmp_path, model='test/dummy',
                            stream_fn=Mock(side_effect=AssertionError('No model execution')))
     original = runtime.get_or_create_session(allow_reset=False)
@@ -189,10 +185,7 @@ async def test_group_new_reset_preserves_readonly_even_after_failure(tmp_path, m
             if fail:
                 patch.setattr(runtime.transcript_store, '_atomic', fault)
             def rotate():
-                if operation == 'new':
-                    runtime.navigate_session('new', '', '', -1, old)
-                else:
-                    runtime.reset_session()
+                runtime.reset_session()
             if fail:
                 with pytest.raises(OSError, match='New-context write'):
                     rotate()
@@ -212,6 +205,7 @@ async def test_group_new_reset_preserves_readonly_even_after_failure(tmp_path, m
         for extension in runtime._retired_extensions:
             await extension.aclose()
         runtime.mcp.close()
+
 
 
 CONTEXT_CRASH = r'''

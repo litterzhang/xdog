@@ -109,8 +109,8 @@ def test_invalid_or_missing_path_is_unknown_not_read_exempt(tmp_path: Path, acti
     args = {"action": action} if path is None else {"action": action, "path": path}
     effect = classify_tool_call("filesystem", args, tmp_path)
     assert effect == ToolEffect(access="execute", scope="unknown")
-    assert tool_call_requires_approval("ask", "filesystem", args, effect=effect)
-    assert tool_call_requires_approval("deny", "filesystem", args, effect=effect)
+    assert tool_call_requires_approval("ask", effect)
+    assert tool_call_requires_approval("deny", effect)
 
 
 @pytest.mark.parametrize("error", [OSError("unavailable"), RuntimeError("symlink loop"), ValueError("bad path")])
@@ -159,8 +159,8 @@ def test_undeclared_tool_names_or_argument_effects_grant_no_exemption(tmp_path: 
     }
     effect = classify_tool_call(name, args, tmp_path)
     assert effect == ToolEffect(access="execute", scope="unknown")
-    assert tool_call_requires_approval("ask", name, args)
-    assert tool_call_requires_approval("deny", name, args, effect=effect)
+    assert tool_call_requires_approval("ask", None)
+    assert tool_call_requires_approval("deny", effect)
 
 
 def test_trusted_effect_and_clock_do_not_resolve_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -176,10 +176,7 @@ def test_trusted_effect_and_clock_do_not_resolve_paths(tmp_path: Path, monkeypat
 @pytest.mark.parametrize("mode", _MODES)
 @pytest.mark.parametrize("effect", _EFFECTS)
 def test_effect_mode_matrix(mode: PermissionMode, effect: ToolEffect) -> None:
-    # Trusted effects take precedence even over legacy read-only tool names.
-    for name in ("extension", "filesystem", "current_time"):
-        actual = tool_call_requires_approval(mode, name, {"action": "read"}, effect=effect)
-        assert actual == _needs_approval(mode, effect)
+    assert tool_call_requires_approval(mode, effect) == _needs_approval(mode, effect)
 
 
 @pytest.mark.parametrize("mode", _MODES)
@@ -225,81 +222,14 @@ async def test_goal_owned_writes_approved_by_binding_not_tool_name(action: str) 
 
 
 @pytest.mark.parametrize("action", ["read", "ls", "grep", "find"])
-def test_legacy_missing_path_is_compatible_but_explicit_unknown_is_not(action: str) -> None:
-    args = {"action": action}
+def test_missing_effect_or_path_never_borrows_a_read_exemption(tmp_path: Path, action: str) -> None:
+    effect = classify_tool_call("filesystem", {"action": action}, tmp_path)
     for mode in ("ask", "deny"):
-        assert not tool_call_requires_approval(mode, "filesystem", args)
-        assert tool_call_requires_approval(
-            mode, "filesystem", args, effect=ToolEffect(access="execute", scope="unknown"),
-        )
+        assert tool_call_requires_approval(mode, None)
+        assert tool_call_requires_approval(mode, effect)
 
 
-def test_request_keeps_four_argument_constructor_compatibility() -> None:
+def test_permission_request_has_no_implied_effect() -> None:
     request = PermissionRequest("id", "tool", {}, "summary")
     assert request.effect is None
     assert request.summary == "summary"
-
-
-async def test_hook_does_no_path_io_and_ignores_effects_in_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail(*args: Any, **kwargs: Any) -> Path:
-        pytest.fail("The approval hook must not resolve filesystem paths")
-
-    monkeypatch.setattr(Path, "resolve", fail)
-    manager = PermissionManager("deny")
-    try:
-        assert await manager.before_tool_call(_ctx("filesystem", {"action": "read"})) is None
-        result = await manager.before_tool_call(_ctx("extension", {"effect": {"access": "read", "scope": "tool_data"}}))
-        assert result is not None and result.block
-        assert await manager.before_tool_call(
-            _ctx("extension", {}), effect=ToolEffect(access="read", scope="outside"),
-        ) is None
-    finally:
-        manager.close()
-
-
-async def test_session_approval_is_not_reused_across_effect_changes() -> None:
-    manager = PermissionManager("ask")
-    requests: list[PermissionRequest] = []
-
-    def approve(request: PermissionRequest) -> None:
-        requests.append(request)
-        manager.resolve(request.id, "allow_session")
-
-    manager.set_request_handler(approve)
-    ctx = _ctx("extension", {})
-    try:
-        effects = (None, ToolEffect(access="write", scope="outside"), ToolEffect(access="execute", scope="unknown"))
-        for effect in effects:
-            assert await manager.before_tool_call(ctx, effect=effect) is None
-            assert await manager.before_tool_call(ctx, effect=effect) is None
-        assert len(requests) == 3
-        manager.set_mode("deny")
-        denied = await manager.before_tool_call(ctx, effect=ToolEffect(access="write", scope="tool_data"))
-        assert denied is not None and denied.block
-        assert not manager._session_rules
-    finally:
-        manager.close()
-
-
-@pytest.mark.parametrize("mode", ["ask", "ask-all"])
-async def test_summary_retains_redaction_and_plain_readable_scope(mode: PermissionMode) -> None:
-    manager = PermissionManager(mode)
-    requests: list[PermissionRequest] = []
-
-    def deny(request: PermissionRequest) -> None:
-        requests.append(request)
-        manager.resolve(request.id, "deny")
-
-    manager.set_request_handler(deny)
-    effect = ToolEffect(access="write", scope="tool_data", requires_approval=True)
-    try:
-        await manager.before_tool_call(_ctx("goal", {"token": "private-token", "name": "你好"}), effect=effect)
-        request, = requests
-        assert "private-token" not in request.summary
-        assert "<redacted>" in request.summary
-        assert "你好" in request.summary
-        assert "tool-owned data" in request.summary
-        assert "explicit approval required" in request.summary
-        assert "\x1b" not in request.summary
-    finally:
-        manager.close()

@@ -64,9 +64,10 @@ def registration(name: Any, models: Any, *, allow_empty: bool = False) -> dict[s
             value = row.get(key, 0)
             if type(value) is not int or not 1 <= value <= 2**31:
                 raise ValueError('Provider models require explicit bounded context/output limits')
-        for key in ('reasoning', 'supports_tool_calls'):
-            if type(row.get(key, False if key == 'reasoning' else True)) is not bool:
-                raise ValueError('Invalid provider model capability')
+        if type(row.get('reasoning', False)) is not bool:
+            raise ValueError('Invalid provider reasoning capability')
+        if row.get('supports_tool_calls') is not None and type(row['supports_tool_calls']) is not bool:
+            raise ValueError('Invalid provider tool capability')
         modalities = row.get('input', ['text'])
         if (not isinstance(modalities, list) or not 1 <= len(modalities) <= 2
                 or any(not isinstance(item, str) or item not in ('text', 'image') for item in modalities)
@@ -107,12 +108,12 @@ def registration(name: Any, models: Any, *, allow_empty: bool = False) -> dict[s
                      'max_prompt_tokens': prompt, 'supported_efforts': list(efforts) if efforts is not None else None,
                      'vision_limits': vision,
                      'reasoning': row.get('reasoning', False),
-                     'supports_tool_calls': row.get('supports_tool_calls', True)})
+                     'supports_tool_calls': row.get('supports_tool_calls')})
     return {'name': name.lower(), 'models': rows}
 
 
-def provider_catalog(value: Any, *, live: bool = False) -> list[dict[str, Any]]:
-    """Validate one worker's bounded declarations, including optional legacy identities."""
+def provider_catalog(value: Any) -> list[dict[str, Any]]:
+    """Validate one current worker catalog with explicit registration identities."""
     if not isinstance(value, list) or len(value) > 4:
         raise ValueError('Invalid extension provider registration capacity')
     rows, seen = [], set()
@@ -126,10 +127,9 @@ def provider_catalog(value: Any, *, live: bool = False) -> list[dict[str, Any]]:
             from xdog.agent.extensions.provider_oauth import public_oauth
             row['oauth'] = public_oauth(item['oauth'])
         token = item.get('registration_id')
-        if token is not None or live:
-            if not isinstance(token, str) or re.fullmatch(r'[a-f0-9]{32}', token) is None:
-                raise ValueError('Invalid extension provider registration identity')
-            row['registration_id'] = token
+        if not isinstance(token, str) or re.fullmatch(r'[a-f0-9]{32}', token) is None:
+            raise ValueError('Invalid extension provider registration identity')
+        row['registration_id'] = token
         seen.add(row['name'])
         rows.append(row)
     return rows

@@ -246,7 +246,7 @@ def test_skill_bindings_and_compaction_summary_share_restore_validation(tmp_path
 
 
 @pytest.mark.parametrize("mutation", ["messages", "version", "unknown", "options", "alias"])
-def test_metadata_schema_and_aliases_are_not_bypassed(mutation):
+def test_metadata_schema_rejects_retired_fields(mutation):
     metadata = agent().dump_metadata()
     if mutation == "messages":
         metadata["messages"] = []

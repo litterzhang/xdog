@@ -377,97 +377,28 @@ async def test_recovery_encoding_failure_happens_before_publishing_admission_fla
         assert owner._children[child].status == "completed" and not owner._children[child].undelivered
 
 
-@pytest.mark.parametrize("host", ["coding", "claw"])
-@pytest.mark.parametrize("attempt_new_path", [False, True])
-async def test_legacy_readonly_continuation_advertises_valid_schema_without_expanding_authority(
-    tmp_path, host, attempt_new_path,
-):
-    from dataclasses import replace
-
-    from jsonschema import Draft202012Validator
-    from xdog.ai.protocols.openai_responses import _convert_tools
-    from xdog.ai.types import AssistantMessage, TextContent, ToolCall
-    from xdog.ai.utils.event_stream import EventStream
+@pytest.mark.parametrize('host', ['coding', 'claw'])
+async def test_completed_child_without_current_snapshot_cannot_be_continued(tmp_path, host):
     from xdog.coding.core.messages import messages_to_dicts
-
-    original_path = tmp_path / "CLAUDE.md"
-    original_path.write_text("original material")
-    new_path = tmp_path / "not-delegated.md"
-    new_path.write_text("not part of the old child's proven authority")
     async with parent(tmp_path, host) as (session, contexts):
-        filesystem = next(tool for tool in session.agent.state.tools if tool.name == "filesystem")
-        executed = []
-
-        async def execute(call_id, args, *extra, **kwargs):
-            executed.append(copy.deepcopy(args))
-            return await filesystem.execute(call_id, args, *extra, **kwargs)
-
-        session.agent.set_tools(tuple(replace(tool, execute=execute) if tool is filesystem else tool
-                                      for tool in session.agent.state.tools))
-        phase = "initial"
-        checked_wire_schemas = []
-
-        class Adapter:
-            def resolve_model(self, name):
-                return Model(id=name, context_window=128000, max_tokens=4096, supports_tool_calls=True)
-
-            def __call__(self, model, context, options):
-                contexts.append(context)
-                if phase == "continued":
-                    tools = _convert_tools(tuple(context.tools))
-                    schema = next(tool["parameters"] for tool in tools if tool["name"] == "filesystem")
-                    # Exercise the actual provider-facing payload, not just the SDK's permissive argument checker.
-                    assert schema["type"] == "object" and "properties" in schema
-                    assert "enum" not in schema  # no object-valued enum in a function declaration
-                    assert schema["properties"]["path"]["enum"] == [str(original_path)]
-                    Draft202012Validator.check_schema(schema)
-                    checked_wire_schemas.append(copy.deepcopy(schema))
-                if context.messages[-1].role == "user" and phase == "initial":
-                    response = AssistantMessage(content=(ToolCall(id="original-read", name="filesystem",
-                        arguments={"action": "read", "path": str(original_path)}),))
-                elif context.messages[-1].role == "user" and attempt_new_path:
-                    response = AssistantMessage(content=(ToolCall(
-                        id=f"not-authorized-{len(contexts)}", name="filesystem",
-                        arguments={"action": "read", "path": str(new_path)}),))
-                else:
-                    response = AssistantMessage(content=(TextContent(text="confirmed receipt"),))
-                return EventStream.empty(response)
-
-        session.agent.set_stream_fn(Adapter())
         old = session.children
-        identifier = await old.runtime.start("summarize CLAUDE.md", config={"tools": ["filesystem"], "skills": []})
-        first = await old.runtime.control("wait", identifier)
-        assert first["status"] == "completed", first["error"]
-        assert len(executed) == 1
-        # Write a real old-format completed record, then reconstruct the actual host owner.
-        first["messages"] = messages_to_dicts(list(old.runtime._children[identifier].transcript))
+        identifier = await old.runtime.start('inspect retained task', config={'tools': [], 'skills': []})
+        record = await old.runtime.control('wait', identifier)
+        assert record['status'] == 'completed'
+        record['messages'] = messages_to_dicts(list(old.runtime._children[identifier].transcript))
         await old.runtime.aclose()
-        first.pop("session_state")
-        first.pop("tool_schemas")
-        await asyncio.to_thread(old.store.save, first)
-        if host == "coding":
+        record.pop('session_state')
+        record.pop('tool_schemas')
+        await asyncio.to_thread(old.store.save, record)
+        if host == 'coding':
             session._load_children()
         else:
             from xdog.claw.core.persistence.session_preparation import children
             from xdog.claw.core.runtime.child_agents import ClawChildren
             prepared = await asyncio.to_thread(children, session._store, session.meta.session_id)
             session.children = ClawChildren(session, prepared)
-        owner = session.children.runtime
-        calls_before = len(contexts)
-        phase = "continued"
-        assert len(contexts) == calls_before  # loading records alone never calls the model
-        await owner.control("follow-up", identifier, "confirm receipt of this new follow-up")
-        result = await owner.control("wait", identifier)
-        assert result["status"] == "completed", result["error"]
-        assert checked_wire_schemas and result["result"] == "confirmed receipt"
-        assert len(executed) == 1  # no replay, and a new readonly path still cannot execute
-        assert result["id"] == identifier
-        ceiling = owner.delegation_schemas(identifier)["filesystem"]
-        assert ceiling == {"type": "object", "enum": [{"action": "read", "path": str(original_path)}]}
-        if attempt_new_path:
-            assert any(message.get("is_error") for message in result["messages"])
-        # A second fresh runtime must keep the exact same authority, not the projection's approximation.
-        await owner.control("follow-up", identifier, "confirm receipt again")
-        again = await owner.control("wait", identifier)
-        assert again["status"] == "completed", again["error"]
-        assert len(executed) == 1 and owner.delegation_schemas(identifier)["filesystem"] == ceiling
+        before = len(contexts)
+        with pytest.raises(ValueError, match='current safe snapshot'):
+            await session.children.runtime.control('follow-up', identifier, 'must not run')
+        assert len(contexts) == before
+        assert session.children.runtime._children[identifier].status == 'completed'

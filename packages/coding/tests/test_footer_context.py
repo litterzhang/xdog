@@ -43,7 +43,7 @@ def test_interactive_footer_uses_usable_prompt_limit():
 def test_footer_displays_provider_model_and_thinking_without_changing_context():
     from xdog.coding.modes.interactive.components.footer import FooterComponent
     from xdog.coding.modes.interactive.theme import create_default_theme
-    from xdog.tui.utils import strip_ansi, visible_width
+    from xdog.tui.utils import string_width, strip_ansi
 
     footer = FooterComponent(create_default_theme())
     footer.update(model='copilot/gpt-6.1-sol', thinking='medium', context_tokens=250, max_context=1000)
@@ -59,7 +59,7 @@ def test_footer_displays_provider_model_and_thinking_without_changing_context():
     footer.set_queue_count(2)
     narrow = strip_ansi(footer.render(42)[0])
     assert 'ctx:250/1.0k' in narrow and 'queued 2' in narrow
-    assert visible_width(footer.render(42)[0]) <= 42
+    assert string_width(footer.render(42)[0]) <= 42
 
 
 def test_coding_startup_header_uses_full_model_and_actual_thinking():

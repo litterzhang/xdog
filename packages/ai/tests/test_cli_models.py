@@ -78,3 +78,13 @@ async def test_json_does_not_claim_embedding_supports_generation(catalogue, caps
 ])
 def test_compact_token_counts(value, expected):
     assert _compact_token_limit(value) == expected
+
+
+def test_retired_image_generation_command_alias_is_not_accepted(monkeypatch, capsys):
+    from xdog.ai.cli import main
+
+    monkeypatch.setattr('sys.argv', ['xdog-ai', 'image_generation', 'provider', 'model', 'prompt'])
+    with pytest.raises(SystemExit) as caught:
+        main()
+    assert caught.value.code == 2
+    assert 'invalid choice' in capsys.readouterr().err

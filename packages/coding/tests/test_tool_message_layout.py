@@ -5,7 +5,7 @@ from xdog.coding.modes.interactive.components.assistant_message import Assistant
 from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
 from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.components.image import Image
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 def rows(component, width=100):
@@ -49,7 +49,7 @@ def test_coding_running_cancel_and_error_keep_real_state_and_stream_tail():
         tool.set_streaming('late delta')
         assert tool.detail_body == before
         for width in range(31):
-            assert all(visible_width(row) <= width for row in tool.render(width))
+            assert all(string_width(row) <= width for row in tool.render(width))
 
 
 def test_coding_tool_keeps_image_rendering_separate_from_text(monkeypatch):

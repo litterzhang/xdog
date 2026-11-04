@@ -10,7 +10,7 @@ from typing import Any
 
 from xdog.ai.types import ImageContent, ToolResultContentPart
 from xdog.coding.modes.interactive.theme import Theme
-from xdog.tui.components.bounded_details import streaming_preview
+from xdog.tui.components.details_panel import streaming_preview
 from xdog.tui.components.diff import Diff
 from xdog.tui.components.image import Image
 from xdog.tui.components.text import Text

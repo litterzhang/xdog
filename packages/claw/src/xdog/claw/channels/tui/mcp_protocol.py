@@ -18,10 +18,8 @@ logger = logging.getLogger(__name__)
 class McpSender:
     def __init__(self, fetch: Callable[[dict[str, Any]], Awaitable[tuple[McpEntry, ...] | McpDocument | McpCompletion]],
                  current: Callable[[str], tuple[str, int]],
-                 write: Callable[[dict[str, Any]], Awaitable[None]], *,
-                 content_types: Callable[[], bool] | None = None) -> None:
+                 write: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
         self.fetch, self.current, self.write = fetch, current, write
-        self.content_types = content_types or (lambda: True)
         self._pending: dict[str, Any] | None = None
         self._active = ""
         self._task: asyncio.Task[None] | None = None
@@ -32,7 +30,7 @@ class McpSender:
     def request(self, request: dict[str, Any]) -> None:
         if self._closed:
             return
-        self._pending = {**request, "_content_types": self.content_types()}
+        self._pending = dict(request)
         if self._operation is not None and not self._operation.cancelling():
             self._operation.cancel()
         if self._task is None or self._task.done():
@@ -84,25 +82,22 @@ class McpSender:
             envelope["revision"] = lease[1]
             if lease[0] != session:
                 raise ValueError("Session changed before MCP read")
-            typed = request["_content_types"]
             result = await self.fetch(request)
-            if self.content_types() != typed:
-                raise ValueError("MCP content format capability changed during read; no replay")
-            preparing = asyncio.create_task(asyncio.to_thread(spool_mcp_data, result, content_types=typed))
+            preparing = asyncio.create_task(asyncio.to_thread(spool_mcp_data, result))
             file, size, checksum = await asyncio.shield(preparing)
-            if self.current(group) != lease or self.content_types() != typed:
-                raise ValueError("Session/context/content format changed during MCP read")
+            if self.current(group) != lease:
+                raise ValueError("Session/context changed during MCP read")
             await self._send({"type": "mcp_data_begin", **envelope, "bytes": size, "sha256": checksum})
             index = 0
             assert file is not None
             while True:
-                if self.current(group) != lease or self.content_types() != typed:
-                    raise ValueError("Session/context/content format changed during MCP transfer")
+                if self.current(group) != lease:
+                    raise ValueError("Session/context changed during MCP transfer")
                 reading = asyncio.create_task(asyncio.to_thread(file.read, 64 * 1024))
                 block = await asyncio.shield(reading)
                 reading = None
-                if self.current(group) != lease or self.content_types() != typed:
-                    raise ValueError("Session/context/content format changed during MCP transfer")
+                if self.current(group) != lease:
+                    raise ValueError("Session/context changed during MCP transfer")
                 if not block:
                     await self._send({"type": "mcp_data_end", **envelope, "chunks": index})
                     break

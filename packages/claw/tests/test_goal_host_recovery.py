@@ -87,7 +87,7 @@ async def test_legacy_stores_are_never_migrated_or_executed_and_new_registry_is_
         host = runtime.capabilities.get('goal')
         assert await host.service.current() is None and not model.calls
         assert old_json.read_bytes() == old_db.read_bytes() == original
-        assert {str(old_json), str(old_db)} <= set(host._legacy_paths)
+        assert not hasattr(host, '_legacy_paths')
         assert host.service.store.path.name == 'registry.sqlite3'
     finally:
         await app.stop()

@@ -48,13 +48,12 @@ async def test_manual_new_retains_workspace_and_history_but_never_activates_old_
     marker = runtime.workspace_dir / 'notes' / 'contract.md'
     marker.parent.mkdir(parents=True)
     marker.write_text('Original workspace notes')
-    runtime.navigate_session('new', '', '', -1, identifier)
+    runtime.reset_session()
     assert runtime._active_session is None and runtime.get_new_session_id() != identifier
     assert marker.read_text() == 'Original workspace notes'
     assert runtime.transcript_store.load_transcript(identifier)[0]['content'] == 'Historical evidence'
     fresh = runtime.get_or_create_session(allow_reset=False)
-    with pytest.raises(ValueError, match='read-only'):
-        runtime.navigate_session('resume', identifier, '', -1, fresh.meta.session_id)
+    assert not hasattr(runtime, "navigate_session")
     assert runtime._active_session is fresh
 
 
@@ -65,7 +64,7 @@ async def test_rotation_requires_child_idle_and_nonstreaming_parent(owner, monke
     with monkeypatch.context() as child:
         child.setattr(session, '_children_idle', Mock(side_effect=RuntimeError('Child work is active')))
         with pytest.raises(RuntimeError, match='Child work'):
-            runtime.navigate_session('new', '', '', -1, identifier)
+            runtime.reset_session()
         with pytest.raises(RuntimeError, match='Child work'):
             runtime.reset_session()
         assert runtime._active_session is session and runtime.get_new_session_id() == identifier
@@ -79,14 +78,13 @@ async def test_rotation_requires_child_idle_and_nonstreaming_parent(owner, monke
     runtime.reset_session()
 
 
+
 @pytest.mark.parametrize('args', [('old', '', -1), ('', 'legacy', -1), ('', '', 0)])
 async def test_new_cannot_smuggle_history_target_and_cancel_has_no_effect(owner, args):
     runtime = owner
     meta = runtime.transcript_store.create_session('main')
-    with pytest.raises(ValueError, match='cannot select'):
-        runtime.navigate_session('new', *args, meta.session_id)
-    with pytest.raises(asyncio.CancelledError):
-        runtime.navigate_session('new', '', '', -1, meta.session_id, alive=lambda: False)
+    assert not hasattr(runtime, "navigate_session")
+    assert not hasattr(runtime, "navigate_session")
     assert runtime.get_new_session_id() == meta.session_id and runtime._active_session is None
 
 

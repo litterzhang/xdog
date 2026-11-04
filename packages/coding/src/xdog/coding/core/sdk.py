@@ -37,20 +37,14 @@ _THINKING_LEVELS: tuple[ThinkingLevel, ...] = ("minimal", "low", "medium", "high
 
 
 def _as_thinking_level(raw: object) -> ThinkingLevel | None:
-    """Normalize configured and legacy names to provider thinking levels."""
-    aliases: dict[str, ThinkingLevel | None] = {
-        "none": None,
-        "off": None,
-        "normal": "medium",
-        "deep": "high",
-        "ultrathink": "xhigh",
-    }
-    if isinstance(raw, str) and raw in aliases:
-        return aliases[raw]
+    """Accept only current provider levels and explicit off; never map old aliases."""
+    if raw is None or raw == 'off':
+        return None
     for level in _THINKING_LEVELS:
         if raw == level:
             return level
-    return None
+    raise ValueError('Invalid thinking level; use off, minimal, low, medium, high or xhigh')
+
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +145,8 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
 
     def _first_model_id() -> str:
         """Choose only a real streaming chat profile when no model was specified."""
-        all_models = [model for model in provider.models() if model.model_type == 'chat' and model.supports_streaming]
+        all_models = [model for model in provider.models()
+                      if model.model_type == 'chat' and model.supports_streaming is not False]
         if not all_models:
             raise ValueError('No streaming chat model available on the configured adapter; no fallback')
         return validated(all_models[0]).id
@@ -246,7 +241,6 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
         session_manager=session_mgr,
         settings=settings,
         tool_repo=tool_repo,
-        bash=None,
         working_dir=wd,
         context_window=context_window,
         max_prompt_tokens=max_prompt_tokens,
@@ -273,7 +267,7 @@ def _build_agent_session(options: CreateSessionOptions, *, new_session_id: str) 
             with concurrent.futures.ThreadPoolExecutor(
                     max_workers=1, thread_name_prefix="xdog-provider-bootstrap") as pool:
                 pool.submit(lambda: asyncio.run(activate())).result()
-        # Persist the effective value rather than a legacy alias such as "normal".
+        # Persist the effective selected level.
         session.settings.set_session_thinking(session.agent.options.thinking or "off")
         session._persist()
 

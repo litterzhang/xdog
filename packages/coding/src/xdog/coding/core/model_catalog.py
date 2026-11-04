@@ -9,7 +9,7 @@ from xdog.ai.types import Model
 def validated(model: Model) -> Model:
     if (not isinstance(model, Model) or not model.id or len(model.id.encode()) > 256
             or any(ord(char) < 33 or ord(char) == 127 for char in model.id)
-            or model.model_type != 'chat' or not model.supports_streaming
+            or model.model_type != 'chat' or model.supports_streaming is False
             or type(model.context_window) is not int or model.context_window <= 0
             or type(model.max_prompt_tokens) is not int or not 0 <= model.max_prompt_tokens <= model.context_window):
         raise ValueError('Model is not an available streaming chat profile on the configured adapter; no fallback')
@@ -42,4 +42,5 @@ def catalog(stream: StreamFn) -> tuple[Model, ...]:
     if (len(models) > 576 or any(not isinstance(model, Model) for model in models)
             or len({model.id for model in models}) != len(models)):
         raise ValueError('Invalid or ambiguous configured model catalog')
-    return tuple(validated(model) for model in models if model.model_type == 'chat' and model.supports_streaming)
+    return tuple(validated(model) for model in models
+                 if model.model_type == 'chat' and model.supports_streaming is not False)

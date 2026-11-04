@@ -24,6 +24,22 @@ def read(store: TranscriptStore, group: str) -> StatusData:
         return StatusData(None, '[]', tuple(_sum_transcript_usage([]).items()))
     with store._lock:
         meta = store.get_active_session(group)
-        rows = store.load_transcript(meta.session_id) if meta is not None else []
-    history = _display_history_entries(rows, group)
-    return StatusData(meta, json.dumps(history), tuple(_sum_transcript_usage(rows).items()))
+        sessions = sorted(store.list_sessions(group),
+                          key=lambda row: (str(row.get('created_at', '')), str(row['session_id'])))
+        history = []
+        current_rows = []
+        for session in sessions:
+            identifier = session['session_id']
+            rows = store.load_transcript(identifier)
+            projected = _display_history_entries(rows, group)
+            if projected:
+                history.append({'role': 'system', 'type': 'session_boundary', 'session_id': identifier,
+                                'content': f"Session · {session.get('created_at', '')}"})
+            for entry in projected:
+                entry['session_id'] = identifier
+                history.append(entry)
+            if meta is not None and identifier == meta.session_id:
+                current_rows = rows
+    # The timeline spans the group; context/token usage still belongs to the
+    # active execution session. No archived Agent or selection is restored.
+    return StatusData(meta, json.dumps(history), tuple(_sum_transcript_usage(current_rows).items()))

@@ -39,7 +39,7 @@ def test_scopes_are_detached_roundtrip_and_presets_remain_data_only():
     assert config.tool_scopes['sample']['ids'] == ['a']
     spec = ChildSpec('id', 'work', tools=config.tools, tool_scopes=config.tool_scopes)
     assert spec.config().to_dict() == config.to_dict()
-    assert ChildConfig.from_record(config.to_dict()) == config
+    assert ChildConfig.from_dict(config.to_dict()) == config
     presets = ChildPresets({'scoped': {'config': config.to_dict()}})
     assert presets.resolve({'preset': 'scoped'}).tool_scopes == config.tool_scopes
     nested = {}
@@ -222,6 +222,6 @@ def test_legacy_enum_normalization_never_becomes_scoped_authority():
     tool = AgentTool(name='sample', parameters={'type': 'object', 'enum': [
         {'action': 'read', 'id': 'a'}, {'action': 'write', 'id': 'b'}]})
     grant = ChildDelegation.capture((tool,), ('sample',))
-    with pytest.raises(ValueError, match='legacy object enums'):
+    with pytest.raises(ValueError, match='whole-object enums'):
         grant.scoped_parameters('sample', {'type': 'object', 'properties': {
             'action': {'enum': ['read']}, 'id': {'enum': ['b']}}})

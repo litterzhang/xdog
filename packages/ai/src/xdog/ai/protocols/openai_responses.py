@@ -21,7 +21,9 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+from xdog.ai.capabilities import validate_model_request
 from xdog.ai.core import AuthResult, BaseProtocol
+from xdog.ai.failures import ModelCapabilityError, http_failure, model_failure
 from xdog.ai.native import NativeEventStream, NativeResponse, ProtocolRequest
 from xdog.ai.protocols._message_builder import MessageBuilder
 from xdog.ai.protocols._message_stream import message_stream
@@ -495,6 +497,7 @@ async def _stream_impl(
                         error=output.error_message,
                         stop_reason="error",
                         message=output.snapshot(),
+                        failure=http_failure(response.status_code, error_body),
                     )
                     return
 
@@ -746,6 +749,7 @@ async def _stream_impl(
                             error=error_text,
                             stop_reason="error",
                             message=output.snapshot(),
+                            failure=model_failure(code=code, partial=started),
                         )
                         return
 
@@ -766,6 +770,7 @@ async def _stream_impl(
                             error=error_text,
                             stop_reason="error",
                             message=output.snapshot(),
+                            failure=model_failure(code=error.get('code'), partial=started),
                         )
                         return
 
@@ -784,6 +789,7 @@ async def _stream_impl(
             error=str(exc),
             stop_reason="error",
             message=output.snapshot(),
+            failure=model_failure(exc, partial=started),
         )
         return
 
@@ -812,6 +818,9 @@ def stream(
     auth: AuthResult,
 ) -> EventStream[AssistantMessage]:
     """Stream a response using the OpenAI Responses API protocol."""
+    validate_model_request(model, context, options)
+    if model.supports_streaming is False:
+        raise ModelCapabilityError("streaming")
     return message_stream(lambda: _stream_impl(model, context, options, auth))
 
 

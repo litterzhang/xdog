@@ -57,7 +57,7 @@ def model_entry(model: Model) -> dict[str, Any]:
         "priority": 0,
         "support_verbosity": False,
         "supports_reasoning_summaries": False,
-        "supports_parallel_tool_calls": model.supports_parallel_tool_calls,
+        "supports_parallel_tool_calls": model.supports_parallel_tool_calls is True,
         "input_modalities": list(model.input or ("text",)),
         "truncation_policy": {"mode": "tokens", "limit": 10000},
         "experimental_supported_tools": [],
@@ -66,7 +66,8 @@ def model_entry(model: Model) -> dict[str, Any]:
 
 
 def _entries(models: Sequence[Model]) -> list[dict[str, Any]]:
-    return [model_entry(m) for m in models if m.model_type == "chat" and m.supports_tool_calls and m.context_window > 0]
+    return [model_entry(m) for m in models
+            if m.model_type == "chat" and m.supports_tool_calls is not False and m.context_window > 0]
 
 
 def generate_catalog(models: Sequence[Model], config_path: Path) -> Path:

@@ -97,7 +97,7 @@ def main() -> None:
     search_p.add_argument("query", help="Search query")
 
     # --- image generation ---
-    image_p = sub.add_parser("image", aliases=["image_generation"], help="Generate image files via a provider")
+    image_p = sub.add_parser("image", help="Generate image files via a provider")
     image_p.add_argument("provider", help="Provider ID (e.g. antigravity)")
     image_p.add_argument("model", help="Image-generation model ID")
     image_p.add_argument("prompt", help="Image prompt or editing instructions")
@@ -170,7 +170,7 @@ def main() -> None:
         asyncio.run(_cmd_search(
             provider=args.provider, model=args.model, query=args.query,
         ))
-    elif args.command in ("image", "image_generation"):
+    elif args.command == "image":
         asyncio.run(_cmd_image(
             provider=args.provider, model=args.model, prompt=args.prompt,
             output_dir=args.output_dir, references=args.reference,

@@ -132,7 +132,9 @@ def test_sigterm_process_finishes_cleanup_and_exits(tmp_path, mode):
         process = subprocess.Popen([sys.executable, str(fixture), str(tmp_path), mode],
                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            deadline = time.monotonic() + 5
+            # Cold imports, capability/daemon startup and SQLite preparation
+            # precede this SIGTERM test. They are not its shutdown deadline.
+            deadline = time.monotonic() + 15
             while not (tmp_path / "ready").exists() and process.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert (tmp_path / "ready").exists(), (tmp_path / "peer.log").read_text()

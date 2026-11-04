@@ -39,7 +39,7 @@ def parse_queue_command(args: str) -> QueueCommand:
 
 
 class LocalQueueIds:
-    """Stable IDs alongside compatibility FIFO storage owned by each client."""
+    """Stable IDs for the local FIFO owned by each client."""
 
     def __init__(self) -> None:
         self.ids: deque[str] = deque()

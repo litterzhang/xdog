@@ -135,7 +135,7 @@ def test_claw_uses_shared_user_spacing_and_role_markers_for_live_and_replayed_me
     log = ChatLog()
     log.add_user("user input")
     assert [strip_ansi(row).rstrip() for row in log.render(100)] == [
-        "", "   unknown · 来源:unknown", " › user input", "",
+        "", "   unknown · unknown", " › user input", "",
     ]
     log.start_assistant("", "run")
     log.update_assistant("live reply", "run")
@@ -143,10 +143,10 @@ def test_claw_uses_shared_user_spacing_and_role_markers_for_live_and_replayed_me
     log.add_user("next input")
     log.add_assistant("replayed reply")
     assert [strip_ansi(row).rstrip() for row in log.render(100)] == [
-        "", "   unknown · 来源:unknown", " › user input", "", "",
-        "   agent · 来源:unknown · 触发:unknown · → 未知（无路由记录）", " • final reply", "", "",
-        "   unknown · 来源:unknown", " › next input", "", "",
-        "   agent · 来源:unknown · 触发:unknown · → 未知（无路由记录）", " • replayed reply", "",
+        "", "   unknown · unknown", " › user input", "", "",
+        "   agent · unknown → 未知", " • final reply", "", "",
+        "   unknown · unknown", " › next input", "", "",
+        "   agent · unknown → 未知", " • replayed reply", "",
     ]
     assert [record.body for record in log.transcript_records()] == [
         "user input", "final reply", "next input", "replayed reply",
@@ -155,20 +155,20 @@ def test_claw_uses_shared_user_spacing_and_role_markers_for_live_and_replayed_me
 
 def test_user_background_includes_role_and_spacing_without_coloring_next_message() -> None:
     from xdog.claw.channels.tui.tui_app import ChatLog
-    from xdog.tui.utils import visible_width
+    from xdog.tui.utils import string_width
 
     log = ChatLog()
     log.add_user("hello **world**")
     log.add_assistant("reply")
     rows = log.render(100)
     assert [strip_ansi(row).rstrip() for row in rows] == [
-        "", "   unknown · 来源:unknown", " › hello world", "", "",
-        "   agent · 来源:unknown · 触发:unknown · → 未知（无路由记录）", " • reply", "",
+        "", "   unknown · unknown", " › hello world", "", "",
+        "   agent · unknown → 未知", " • reply", "",
     ]
     for row in rows[:4]:
         assert row.startswith("\x1b[48;")
         assert row.endswith("\x1b[49m")
-        assert visible_width(row) == 100
+        assert string_width(row) == 100
     assert "\x1b[48;" not in ''.join(rows[4:])
 
 
@@ -199,7 +199,7 @@ def test_claw_status_and_shortcuts_align_with_input_text() -> None:
 
 def test_claw_model_label_combines_provider_and_thinking_and_updates_live() -> None:
     from xdog.claw.channels.tui.tui_app import ChatApp
-    from xdog.tui.utils import visible_width
+    from xdog.tui.utils import string_width
 
     app = ChatApp('/tmp/unused-claw-test.sock')
     app._state.update(model='copilot/gpt-6.1-sol', thinking='medium')
@@ -215,7 +215,7 @@ def test_claw_model_label_combines_provider_and_thinking_and_updates_live() -> N
         app._update_footer()
         assert ' | antigravity/vendor/model | ' in app._status_metadata()
         assert ' - unknown' not in strip_ansi(app._footer.render(180)[0])
-    assert visible_width(app._footer.render(42)[0]) <= 42
+    assert string_width(app._footer.render(42)[0]) <= 42
 
 
 def test_claw_highlights_registered_command_in_input_not_arguments() -> None:
@@ -226,3 +226,108 @@ def test_claw_highlights_registered_command_in_input_not_arguments() -> None:
     editor.set_text('/help model')
     assert any(editor._theme.accent('/help') + ' model' in row for row in editor.render(80))
     assert editor.get_text() == '/help model'
+
+
+def test_system_notices_use_the_same_dot_and_gutter_without_markdown_conversion():
+    from xdog.claw.channels.tui.tui_app import ChatLog
+
+    log = ChatLog()
+    log.add_system('session_ready *literal*\nsecond line', source='history')
+    rows = [strip_ansi(row).rstrip() for row in log.render(100)]
+    assert rows == ['', '   system · history', ' • session_ready *literal*', '   second line', '']
+    record = log.transcript_records()[0]
+    assert record.role == 'system' and record.body == 'session_ready *literal*\nsecond line'
+    assert '•' not in record.body  # Presentation never rewrites the saved/source text.
+
+
+def test_wrapped_system_notices_align_and_fit_narrow_terminals():
+    from xdog.claw.channels.tui.tui_app import ChatLog
+    from xdog.tui.utils import string_width
+
+    log = ChatLog()
+    log.add_system('first line wraps across several rows\nnext line\x1b[2J')
+    rows = [strip_ansi(row).rstrip() for row in log.render(16)]
+    marker = next(index for index, row in enumerate(rows) if row.startswith(' • '))
+    assert all(not row or row.startswith('   ') for row in rows[marker + 1:])
+    assert sum(row.startswith(' • ') for row in rows) == 1
+    assert '\x1b' not in log.transcript_records()[0].body
+    for width in (0, 1, 2, 3, 4, 8, 16):
+        assert all(string_width(row) <= width for row in log.render(width))
+
+
+def test_handoff_shortcut_hint_is_dim_and_not_part_of_the_message_body():
+    from xdog.claw.channels.tui.tui_app import HandoffMessage, theme_dim
+
+    message = HandoffMessage('full original handoff', 'Context handoff · compact',
+                             {'role': 'system', 'source': 'history'})
+    rows = message.render(100)
+    hint = next(row for row in rows if 'Ctrl+O' in strip_ansi(row))
+    assert theme_dim('Ctrl+O: full handoff') in hint
+    assert 'Ctrl+O' not in message.detail_body
+    message.set_expanded(True)
+    assert 'Ctrl+O' not in _rendered(message)
+
+
+def test_connection_notices_and_banner_follow_all_history_chunks():
+    from xdog.claw.channels.tui.tui_app import ChatApp
+
+    app = ChatApp('/tmp/unused-history-order.sock', group_id='maotao')
+    try:
+        app._handle_response({'type': 'pong', 'session_id': 'current', 'turn_count': 2,
+                              'history_count': 2, 'history_format': 2, 'session_controls': 1})
+        assert 'Resumed context' not in _rendered(app._chat_log)
+        assert 'Connected · group' not in _rendered(app._chat_log)
+        for text in ('FIRST-HISTORICAL-MESSAGE', 'LAST-HISTORICAL-MESSAGE'):
+            app._handle_response({'type': 'history_chunk', 'entries': [{'role': 'user', 'content': text}]})
+        app._handle_response({'type': 'history_end'})
+        output = _rendered(app._chat_log)
+        assert output.index('LAST-HISTORICAL-MESSAGE') < output.index('Resumed context')
+        assert output.index('Resumed context') < output.index('Connected · group')
+        assert 'unix://' not in output
+        details = '\n'.join(record.body for record in app._chat_log.detail_records())
+        assert 'unused-history-order.sock' in details and 'current' in details
+        app._handle_response({'type': 'history_end'})
+        assert _rendered(app._chat_log).count('Connected · group') == 1
+    finally:
+        app._request_exit()
+
+
+def test_reconnect_banner_is_after_refreshed_history_and_does_not_duplicate_startup_notices():
+    from xdog.claw.channels.tui.tui_app import ChatApp
+
+    app = ChatApp('/tmp/unused-history-order.sock')
+    try:
+        app._handle_response({'type': 'pong', 'session_id': 'current', 'history_count': 0, 'session_controls': 1})
+        assert _rendered(app._chat_log).count('New context') == 1
+        app._handle_response({'type': '_connection_opened', 'generation': 1})
+        app._handle_response({'type': 'pong', 'session_id': 'current', 'history_count': 1,
+                              'history_format': 2, 'session_controls': 1})
+        app._handle_response({'type': 'history_chunk', 'entries': [{'role': 'user', 'content': 'LATEST-HISTORY'}]})
+        assert 'Connected · group' not in _rendered(app._chat_log)
+        app._handle_response({'type': 'history_end'})
+        output = _rendered(app._chat_log)
+        assert (output.index('LATEST-HISTORY') < output.index('Current group context loaded')
+                < output.index('Connected · group'))
+        assert 'New context' not in output and 'Resumed context' not in output
+    finally:
+        app._request_exit()
+
+
+def test_system_dots_use_accent_while_agent_dots_and_shortcuts_remain_dim():
+    from xdog.claw.channels.tui.tui_app import (
+        ExternalMessage,
+        HandoffMessage,
+        SystemMessage,
+        _AssistantText,
+        theme_accent,
+        theme_dim,
+    )
+
+    messages = [SystemMessage('notice', 'tui'), ExternalMessage('event', {'role': 'system', 'source': 'acp'}),
+                HandoffMessage('full handoff', 'compact handoff', {'role': 'system', 'source': 'history'})]
+    for message in messages:
+        output = '\n'.join(message.render(100))
+        assert theme_accent('•') in output and theme_dim('•') not in output
+    assert theme_dim('•') in '\n'.join(_AssistantText('answer', {}).render(100))
+    hint = next(row for row in messages[-1].render(100) if 'Ctrl+O' in strip_ansi(row))
+    assert theme_dim('Ctrl+O: full handoff') in hint

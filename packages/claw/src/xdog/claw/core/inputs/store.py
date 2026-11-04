@@ -82,11 +82,11 @@ def _select(db: sqlite3.Connection, scope: InputScope, identifier: str) -> sqlit
 
 
 def _execution_times(row: sqlite3.Row) -> tuple[float | None, float | None]:
-    if 'started_at' not in row.keys() and 'settled_at' not in row.keys():
-        return None, None  # Existing v3 receipts have no reconstructible times.
     if 'started_at' not in row.keys() or 'settled_at' not in row.keys():
-        raise ValueError('Incomplete input execution timestamp schema')
+        raise ValueError('Unsupported input execution timestamp schema')
     started, settled = row['started_at'], row['settled_at']
+    # Nullable audit timestamps do not determine whether an execution happened.
+    # The explicit admission/status facts remain authoritative; never invent times.
     if (any(v is not None and (type(v) not in (int, float) or not math.isfinite(v) or v <= 0)
             for v in (started, settled))
             or started is not None and not row['started']
@@ -253,14 +253,8 @@ class InputStore:
 
         def recover(db: sqlite3.Connection) -> None:
             columns = {row['name'] for row in db.execute('PRAGMA table_info(attempts)')}
-            missing = {'started_at', 'settled_at'} - columns
-            if missing == {'started_at', 'settled_at'}:
-                # One atomic nullable extension of the supported v3 schema only.
-                # Old rows remain NULL: there is no historical time backfill.
-                db.execute('ALTER TABLE attempts ADD COLUMN started_at REAL')
-                db.execute('ALTER TABLE attempts ADD COLUMN settled_at REAL')
-            elif missing:
-                raise ValueError('Incomplete input execution timestamp schema')
+            if not {'started_at', 'settled_at'} <= columns:
+                raise ValueError('Unsupported input database schema; no upgrade is performed')
             db.execute("UPDATE attempts SET settled_at=? WHERE status='running' AND started_at IS NOT NULL",
                        (time.time(),))
             db.execute("UPDATE attempts SET status='released' WHERE status='claimed'")
@@ -352,7 +346,7 @@ class InputStore:
                 raise ValueError('Invalid started execution receipt')
             started, settled = _execution_times(row)
             if started is None:
-                return {'availability': 'unavailable', 'reason': 'legacy_execution_metadata_missing'}
+                return {'availability': 'unavailable', 'reason': 'execution_timestamps_not_recorded'}
             result: dict[str, Any] = {'execution_id': row['attempt_id'], 'status': row['status'],
                 'message_ids': [row['message_id']], 'started_at': started}
             if settled is not None:

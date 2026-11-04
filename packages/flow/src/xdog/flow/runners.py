@@ -151,24 +151,24 @@ class StubRunner:
         session: Mapping[str, object] | None = None,
         session_sink: dict[str, object] | None = None,
     ) -> tuple[object, int]:
+        from xdog.agent.core import AgentMessage, AgentState
+        from xdog.agent.snapshots import decode_snapshot, encode_snapshot
+        from xdog.ai.types import AssistantMessage, TextContent, UserMessage
+
         _ = timeout
+        prior: tuple[AgentMessage, ...] = ()
+        if session is not None:
+            saved = decode_snapshot(dict(session))
+            saved.require_resumable()
+            prior = saved.messages
         value, tokens = self._stubs.agent(node, inputs=inputs, step=step, fan_index=fan_index)
         if session_sink is not None:
-            # Synthesise the turn a real agent would have had.  Without this,
-            # every `xdog-flow test` of an inheriting workflow would see an empty
-            # context and pass for the wrong reason.
-            raw_prior = session.get("messages") if session else None
-            prior = list(raw_prior) if isinstance(raw_prior, list) else []
+            # Use the real codec, not a second test-only snapshot representation.
             text = value if isinstance(value, str) else repr(value)
-            session_sink["session"] = {
-                "messages": [
-                    *prior,
-                    {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
-                    {"role": "assistant", "content": [{"type": "text", "text": text}]},
-                ],
-                "system_prompt": system_prompt,
-                "model": model,
-            }
+            session_sink["session"] = encode_snapshot(AgentState(model=model, messages=(
+                *prior, UserMessage(content=(TextContent(text=user_prompt),)),
+                AssistantMessage(content=(TextContent(text=text),)),
+            )), base_system_prompt=system_prompt)
         return value, tokens
 
 
@@ -301,7 +301,7 @@ class SdkRunner:
         )
 
         try:
-            if session:
+            if session is not None:
                 # The node owns configuration; inherited messages are data, not a
                 # grant to adopt another node's model or skill selection. In
                 # particular, restore validates adapter model availability BEFORE
@@ -309,11 +309,8 @@ class SdkRunner:
                 inherited = dict(session)
                 if node.model:
                     inherited["model"] = model
-                if "format" in inherited or "version" in inherited:
-                    # Reuse the SDK's captured, versioned identities for this
-                    # node's explicit selection (including []). Do not resolve
-                    # obsolete inherited skills just to discard them afterwards.
-                    inherited["skills"] = agent.dump()["skills"]
+                # This node's selection is authoritative; only current snapshots are accepted.
+                inherited["skills"] = agent.dump()["skills"]
                 agent.restore(inherited)
                 # An absent node system prompt retains the inherited base prompt.
                 if node.system_prompt:

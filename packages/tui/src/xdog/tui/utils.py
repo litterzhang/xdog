@@ -1,6 +1,6 @@
 """String width calculation, ANSI handling, and text wrapping utilities.
 
-Includes both legacy utilities and new TypeScript-ported ANSI-aware functions.
+ANSI-aware rendering primitives shared by terminal components.
 """
 
 from __future__ import annotations
@@ -62,10 +62,6 @@ def string_width(text: str) -> int:
     cleaned = cleaned.replace("\t", "   ")
     printable = "".join(ch for ch in cleaned if wcwidth.wcwidth(ch) >= 0)
     return max(0, wcwidth.wcswidth(printable))
-
-
-# Alias matching TypeScript API name
-visible_width = string_width
 
 
 def char_width(ch: str) -> int:
@@ -574,7 +570,7 @@ def _wrap_single_line(line: str, width: int) -> list[str]:
     if not line:
         return [""]
 
-    vis_len = visible_width(line)
+    vis_len = string_width(line)
     if vis_len <= width:
         return [line]
 
@@ -586,7 +582,7 @@ def _wrap_single_line(line: str, width: int) -> list[str]:
     current_visible_length = 0
 
     for token in tokens:
-        token_visible_length = visible_width(token)
+        token_visible_length = string_width(token)
         is_whitespace = token.strip() == ""
 
         # Token too long — break it character by character
@@ -602,7 +598,7 @@ def _wrap_single_line(line: str, width: int) -> list[str]:
             broken = _break_long_word(token, width, tracker)
             wrapped.extend(broken[:-1])
             current_line = broken[-1]
-            current_visible_length = visible_width(current_line)
+            current_visible_length = string_width(current_line)
             continue
 
         # Check overflow
@@ -760,7 +756,7 @@ def apply_background_to_line(
 
     Ported from TypeScript applyBackgroundToLine().
     """
-    vis_len = visible_width(line)
+    vis_len = string_width(line)
     padding_needed = max(0, width - vis_len)
     with_padding = line + " " * padding_needed
     # Markdown emphasis/code may emit full resets inside the line. Restore only

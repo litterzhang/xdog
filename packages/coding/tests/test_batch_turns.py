@@ -143,7 +143,8 @@ async def test_singleton_session_input_hook_keeps_legacy_canonical_payload(codin
 
     monkeypatch.setattr(coding_session.extensions, 'event', event)
     value = member('callback', origin='acp').value
-    await coding_session._execute_message(json.dumps(input_data(value)), input_origin='session_input')
+    from xdog.coding.core.sessions.batches import TurnInput
+    await coding_session._execute_messages((TurnInput(value, input_origin='session_input'),), batch_id='single')
     assert json.loads(starts[0]['user_input']) == input_data(value)
     assert starts[0]['inputs'] == [input_data(value)]
 

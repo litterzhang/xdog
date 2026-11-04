@@ -24,6 +24,7 @@ async def test_copilot_native_complete_uses_requested_supported_protocol_and_wir
         provider="copilot",
         base_url="https://catalog.invalid",
         supported_protocols=("openai-completions", "anthropic-messages"),
+        supported_generation_protocols=("openai-completions", "anthropic-messages"),
     )
     provider._model_cache[resolved.id] = resolved
     captured: dict[str, Any] = {}
@@ -68,6 +69,7 @@ async def test_copilot_native_auth_context_preserves_last_role_and_base64_images
         api="anthropic-messages",
         provider="copilot",
         supported_protocols=("anthropic-messages",),
+        supported_generation_protocols=("anthropic-messages",),
     )
     provider._model_cache[resolved.id] = resolved
     captured_contexts: list[Any] = []
@@ -542,3 +544,17 @@ async def test_runtime_routes_native_complete_to_provider() -> None:
     assert response.status == 200
     assert support_calls == [("model", request), ("model", request)]
     assert calls == [("model", request)]
+
+
+async def test_native_generation_does_not_infer_support_from_old_catalog_fields(monkeypatch):
+    provider = CopilotProvider()
+    model = Model(id='copilot/unreported', api='anthropic-messages',
+                  supported_protocols=('anthropic-messages',))
+    provider._model_cache[model.id] = model
+    async def forbidden(*args):
+        pytest.fail('Missing native capability must fail before authentication')
+    monkeypatch.setattr(provider._get_vendor(), 'resolve_auth', forbidden)
+    request = ProtocolRequest.from_json('anthropic-messages', {'messages': [], 'max_tokens': 1})
+    assert provider.supports_native_request('unreported', request) is False
+    with pytest.raises(NotImplementedError):
+        await provider.request_complete('unreported', request)

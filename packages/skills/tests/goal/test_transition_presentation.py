@@ -98,7 +98,7 @@ def test_unavailable_and_missing_history_are_not_inferred_as_user_resume(value):
         assert 'user_authorized=true' not in text
 
 
-@pytest.mark.parametrize('status,wait_for', [('paused', ''), ('waiting', 'user'), ('waiting', 'host')])
+@pytest.mark.parametrize('status,wait_for', [('paused', ''), ('waiting', 'user')])
 def test_transition_never_overwrites_current_pause_or_wait(status, wait_for):
     data = transition_facts()
     data['current'].update(status=status, wait_for=wait_for)
@@ -189,7 +189,7 @@ async def test_actual_native_resume_change_and_readonly_status_show_same_provena
 
 
 @pytest.mark.parametrize('view', ['status', 'change'])
-@pytest.mark.parametrize('wait_for', ['tasks', 'user', 'host'])
+@pytest.mark.parametrize('wait_for', ['tasks', 'user'])
 @pytest.mark.parametrize('user_authorized', [False, True])
 def test_model_activation_is_not_presented_as_native_user_resume(view, wait_for, user_authorized):
     data = transition_facts()

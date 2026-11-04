@@ -1,7 +1,6 @@
 """Wheel-only Eyes CLI/tool -> ordinary ACP/Core intake, without report routing.
 
-The historical filename is retained for the artifact verifier entry point. Eyes
-owns no chat-output tracking; separate Core output probes verify user delivery.
+Eyes owns no chat-output tracking; separate Core output probes verify user delivery.
 Only an offline model is scripted. Every daemon/data/socket path is temporary.
 """
 from __future__ import annotations

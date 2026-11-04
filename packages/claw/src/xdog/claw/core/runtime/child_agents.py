@@ -511,7 +511,7 @@ class ClawChildren:
         child_stream = preserve_model_metadata(guarded, routed_stream)
         agent = Agent(child_stream,
             config=AgentConfig(model=selected.id,
-            system_prompt=selected.prompt(child_prompt(None, spec)),
+            system_prompt=selected.prompt(child_prompt(spec)),
             tool_execution=state.tool_execution,
             context_window=selected.context_window, max_prompt_tokens=selected.max_prompt_tokens,
             supports_tool_calls=selected.supports_tool_calls, options=selected.options,

@@ -47,8 +47,7 @@ async def test_context_rotation_releases_settled_extension_owner_before_applicat
         )
         summaries = [args for args in calls if isinstance(args[1].system_prompt, str)
                      and args[1].system_prompt.startswith('You are a conversation summarizer.')]
-        assert len(calls) == 7 and len(summaries) == 3
-        assert all(not args[1].tools for args in summaries)
+        assert len(calls) == 4 and not summaries  # Short rotations do not expand context through a model.
     finally:
         await app.stop()
 

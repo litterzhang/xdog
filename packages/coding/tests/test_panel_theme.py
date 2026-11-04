@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from xdog.coding.cli.session_picker import SessionPicker
 from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 @pytest.mark.parametrize('mode', ['native', 'dark', 'light', 'plain'])
@@ -35,7 +35,7 @@ async def test_browsers_and_resume_picker_follow_the_coding_theme(coding_session
         rows = picker.render(80)
         assert rows[0] == ui._theme.header(strip_ansi(rows[0]))
         assert ('\x1b[' in ''.join(rows)) == (mode != 'plain')
-        assert all(visible_width(row) <= 80 for row in rows)
+        assert all(string_width(row) <= 80 for row in rows)
     finally:
         ui._request_exit()
         await session.aclose()

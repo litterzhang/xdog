@@ -6,7 +6,7 @@ from __future__ import annotations
 # No hardcoded default model. The first model in the ai catalog is used
 # when no model is configured. Set via GlobalConfig.default_model or CLI --model.
 DEFAULT_MODEL: str | None = None
-DEFAULT_THINKING_LEVEL = "normal"
+DEFAULT_THINKING_LEVEL = "medium"
 
 # --- Token / context limits ---
 MAX_CONTEXT_TOKENS = 200_000

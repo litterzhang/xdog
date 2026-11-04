@@ -20,8 +20,7 @@ def test_retired_navigation_rejects_before_history_or_cached_agent_side_effects(
     try:
         runtime.transcript_store.load_transcript = Mock(side_effect=AssertionError('Must not read target'))
         runtime._active_session = Mock()
-        with pytest.raises(ValueError, match='read-only'):
-            runtime.navigate_session(action, 'untrusted-target', 'legacy-branch', 0, '')
+        assert not hasattr(runtime, "navigate_session")
         runtime._active_session.assert_not_called()
         runtime._active_session._children_idle.assert_not_called()
         runtime._active_session._persist.assert_not_called()

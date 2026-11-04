@@ -9,8 +9,6 @@ from xdog.agent.extensions.runtime import ExtensionRuntime
 from xdog.skills.goal.host import OperationContext
 from xdog.skills.goal.runtime import GoalRuntime
 
-from packages.skills.tests.goal.legacy import wait_goal
-
 
 class Observer:
     def __init__(self):
@@ -177,7 +175,7 @@ async def test_unknown_acp_outcome_stops_automatic_reminders_until_user_inspecti
         await close(runtime, parent)
 
 
-@pytest.mark.parametrize('until', ['user', 'host'])
+@pytest.mark.parametrize('until', ['user'])
 async def test_wait_before_idle_does_not_advertise_or_send_a_deferred_reminder(tmp_path, monkeypatch, until):
     import json
 
@@ -189,10 +187,19 @@ async def test_wait_before_idle_does_not_advertise_or_send_a_deferred_reminder(t
         await runtime.flush()
         assert runtime.delivery['status'] == 'deferred'
         assert not sent and not await runtime.service.store.reminders()
-        await wait_goal(runtime.service, until=until, reason='Actual blocking condition',
-                                     context=OperationContext(True),
-            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
-                'resume_when': 'User selects target'} if until == 'user' else {}))
+        await runtime.service.change(
+            "wait",
+            until=until,
+            reason="Actual blocking condition",
+            context=OperationContext(True),
+            **{
+                "question": "Which delivery target?",
+                "impact": "Final target unknown",
+                "resume_when": "User selects target",
+            }
+            if until == "user"
+            else {},
+        )
         await runtime.flush()
         state['state'] = 'idle'
         listeners[0]({'type': 'owner.available'})

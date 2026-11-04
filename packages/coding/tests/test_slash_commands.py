@@ -108,7 +108,6 @@ def agent_session(tmp_path):
         session_manager=session_mgr,
         settings=SettingsManager(),
         tool_repo=None,
-        bash=None,
         working_dir=tmp_path,
     )
 
@@ -133,7 +132,6 @@ def agent_session_with_models(tmp_path):
         session_manager=session_mgr,
         settings=SettingsManager(),
         tool_repo=None,
-        bash=None,
         working_dir=tmp_path,
     )
 

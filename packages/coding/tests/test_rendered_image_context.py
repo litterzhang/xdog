@@ -49,7 +49,7 @@ async def test_retained_plus_new_image_exceeds_actual_model_context_without_prun
                                          config=AgentConfig(model=adapter.profile.id)),
             session_data=store.create_session(working_dir=tmp_path, model=adapter.profile.id), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_repo=None, bash=None, permissions=PermissionManager('deny'))
+            tool_repo=None, permissions=PermissionManager('deny'))
         owner.model_info = adapter.profile
     else:
         config = ClawConfig(model=adapter.profile.id, data_dir=str(tmp_path / 'data'),

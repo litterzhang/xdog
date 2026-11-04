@@ -59,12 +59,13 @@ def parse_models(
             input_types = _modalities(override["input"])
         if "output" in override:
             output_types = _modalities(override["output"])
-        streaming = raw.get("supportsStreaming") is not False
+        tool_calls = override.get("tool_calls", raw.get("supportsToolCalls"))
+        streaming = raw["supportsStreaming"] if type(raw.get("supportsStreaming")) is bool else None
         web_search: bool | None = raw["supportsWebSearch"] if type(raw.get("supportsWebSearch")) is bool else None
         if web_search is None and model_id in search_models:
             web_search = True
         endpoints = [ModelEndpoint(PROTOCOL, "generate", "/v1internal:generateContent")]
-        if streaming:
+        if streaming is not False:
             endpoints.append(ModelEndpoint(PROTOCOL, "stream_generate", "/v1internal:streamGenerateContent"))
         models.append(Model(
             id=f"antigravity/{model_id}", name=str(raw.get("displayName") or model_id),
@@ -76,7 +77,7 @@ def parse_models(
             context_window=_tokens(raw.get("maxTokens")) or _tokens(raw.get("maxInputTokens")),
             max_prompt_tokens=_tokens(raw.get("maxInputTokens")), max_tokens=_tokens(raw.get("maxOutputTokens")),
             reasoning=raw.get("supportsThinking") is True,
-            supports_tool_calls=override.get("tool_calls", raw.get("supportsToolCalls", True)) is True,
+            supports_tool_calls=tool_calls if type(tool_calls) is bool else None,
             supports_streaming=streaming,
             supports_web_search=web_search,
         ))

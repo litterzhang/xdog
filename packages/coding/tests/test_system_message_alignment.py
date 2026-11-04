@@ -2,7 +2,7 @@
 import pytest
 from xdog.coding.modes.interactive.components.chat_log import ChatLog
 from xdog.coding.modes.interactive.theme import create_default_theme
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 @pytest.mark.parametrize('width', [12, 24, 80, 160])
@@ -14,7 +14,7 @@ def test_system_command_lines_and_wrapped_continuations_share_body_gutter(width)
     nonempty = [line for line in lines if line.strip()]
     assert len(nonempty) >= 4
     assert all(line.startswith('   ') and not line.startswith('    ') for line in nonempty)
-    assert all(visible_width(line) <= width for line in lines)
+    assert all(string_width(line) <= width for line in lines)
     full = ''.join(line.strip() for line in nonempty)
     assert 'Goal:' in full and 'Status:' in full and 'Reason:' in full and 'Next:' in full
 

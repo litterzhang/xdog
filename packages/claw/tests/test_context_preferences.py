@@ -146,9 +146,7 @@ async def test_application_rotation_uses_selected_model_reasoning_skills_and_too
         handoff = runtime.transcript_store.load_transcript(fresh.meta.session_id)[0]
         assert handoff['type'] == 'xdog.claw.handoff.v1'
         assert handoff['data']['source_session_id'] == original
-        assert len(calls) == 2  # Original turn + one tool-free handoff summary; no task replay.
-        assert calls[-1][0] == 'test/chosen' and calls[-1][2].thinking == 'high'
-        assert not calls[-1][1].tools
+        assert len(calls) == 1  # Only the original turn; short handoff needs no model request.
     finally:
         await app.stop()
 

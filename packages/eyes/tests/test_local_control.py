@@ -23,7 +23,7 @@ def test_daemon_location_is_independent_of_project_and_has_no_harness_token(tmp_
     first = daemon_location()
     monkeypatch.chdir(tmp_path)
     assert first == daemon_location()
-    assert first.cwd == first.directory and first.generation == ''
+    assert not hasattr(first, 'cwd') and first.generation == ''
     assert first.directory.stat().st_mode & 0o777 == 0o700
     assert not hasattr(first, 'token') and not hasattr(first, 'descriptor')
     assert first != daemon_location(tmp_path / 'isolated')
@@ -154,7 +154,7 @@ async def test_control_response_schema_errors_are_reported_as_control_errors(tmp
     async def answer(reader,writer):
         try:
             await reader.readline()
-            writer.write(encode_frame({'version':1,'generation':'1'*32,'cwd':str(location.directory),
+            writer.write(encode_frame({'version':2,'generation':'1'*32,'directory':str(location.directory),
                                        'status':[],'body':{}}))
             await writer.drain()
         finally:
@@ -200,4 +200,24 @@ def test_daemon_location_cannot_be_rebound_to_a_project(tmp_path):
 
     location = daemon_location()
     with pytest.raises(ControlError, match='daemon directory'):
-        validate_location(replace(location, cwd=tmp_path))
+        validate_location(replace(location, socket=tmp_path / "other.sock"))
+
+
+async def test_retired_control_and_owner_formats_are_rejected_without_rewriting(tmp_path):
+    from xdog.eyes.local_control import ControlError, daemon_location, encode_frame, read_location
+    from xdog.eyes.runtime import DaemonRuntime
+
+    location = daemon_location(tmp_path / 'isolated')
+    owner = location.directory / 'owner.json'
+    data = encode_frame({'version': 1, 'generation': '1' * 32, 'cwd': str(location.directory),
+                         'socket': str(location.socket), 'pid': os.getpid()})
+    owner.write_bytes(data)
+    owner.chmod(0o600)
+    with pytest.raises(ControlError, match='owner identity'):
+        read_location(location)
+    assert owner.read_bytes() == data
+    runtime = DaemonRuntime(location)
+    with pytest.raises(ControlError, match='control version'):
+        await runtime.dispatch({'version': 1, 'generation': runtime.location.generation,
+                                'action': 'daemon-stop', 'body': {}})
+    assert not runtime.stop.is_set() and owner.read_bytes() == data

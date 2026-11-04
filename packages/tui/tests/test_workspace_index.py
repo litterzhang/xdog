@@ -13,7 +13,7 @@ import pytest
 from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.file_completion import WorkspaceFileCompletionProvider
 from xdog.tui.keys import KeyEvent
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 class Theme:
@@ -240,7 +240,7 @@ def test_progress_and_fallback_fit_editor_budget_and_do_not_become_insertions() 
         editor.set_render_budget(height)
         rows = editor.render(24)
         assert len(rows) <= height
-        assert all(visible_width(row) <= 24 for row in rows)
+        assert all(string_width(row) <= 24 for row in rows)
         assert all("\x1b[2J" not in row for row in rows)
     assert "Indexing" in "\n".join(strip_ansi(row) for row in editor.render(80))
     editor.handle_input(KeyEvent("tab"))

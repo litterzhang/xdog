@@ -12,8 +12,6 @@ from xdog.skills.goal.runtime import GoalRuntime
 from xdog.skills.goal.service import GoalService
 from xdog.skills.goal.store import GoalStore
 
-from packages.skills.tests.goal.legacy import wait_goal
-
 USER = OperationContext(True)
 
 
@@ -68,16 +66,24 @@ def parent_for(host):
     return parent
 
 
-@pytest.mark.parametrize('until', ['user', 'host'])
+@pytest.mark.parametrize('until', ['user'])
 async def test_automatic_input_cannot_launder_protected_wait_through_task_wait(tmp_path, until):
     service = await service_at(tmp_path)
     try:
         await service.create('One', 'Original user outcome', context=USER)
-        await wait_goal(service, until=until,
-            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
-                'resume_when': 'User selects target'} if until == 'user' else {}))
+        await service.change(
+            "wait",
+            until=until,
+            **{
+                "question": "Which delivery target?",
+                "impact": "Final target unknown",
+                "resume_when": "User selects target",
+            }
+            if until == "user"
+            else {},
+        )
         with pytest.raises(ValueError, match='user|wait|resume'):
-            await wait_goal(service, until='tasks')
+            await service.change('wait', until='tasks')
         goal = await service.current()
         assert goal.status == 'waiting' and goal.wait_for == until
     finally:
@@ -276,14 +282,22 @@ async def test_claim_reminder_is_atomic_and_rejects_stale_current_revision(tmp_p
         await service.close()
 
 
-@pytest.mark.parametrize('until', ['user', 'host'])
+@pytest.mark.parametrize('until', ['user'])
 async def test_automatic_completion_cannot_release_protected_wait(tmp_path, until):
     service = await service_at(tmp_path)
     try:
         await service.create('One', 'Inspect before any completion', context=USER)
-        await wait_goal(service, until=until,
-            **({'question': 'Which delivery target?', 'impact': 'Final target unknown',
-                'resume_when': 'User selects target'} if until == 'user' else {}))
+        await service.change(
+            "wait",
+            until=until,
+            **{
+                "question": "Which delivery target?",
+                "impact": "Final target unknown",
+                "resume_when": "User selects target",
+            }
+            if until == "user"
+            else {},
+        )
         with pytest.raises(ValueError, match='user operation'):
             await service.change('complete', summary='Automatic attempt to skip protected wait')
         assert (await service.current()).wait_for == until
@@ -330,7 +344,7 @@ async def test_retired_invocation_cannot_commit_after_waiting_for_database_admis
 
     async def change():
         with service.invocation(lambda: valid):
-            await wait_goal(service, until='tasks')
+            await service.change('wait', until='tasks')
 
     pending = None
     try:

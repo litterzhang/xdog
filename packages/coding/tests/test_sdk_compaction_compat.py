@@ -7,12 +7,13 @@ from xdog.agent.compaction import (
     estimate_history_tokens,
     estimate_message_tokens,
     estimate_tokens,
+    extract_text,
     split_messages,
 )
 from xdog.ai.types import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
 from xdog.ai.utils.event_stream import EventStream
 from xdog.coding.core.compaction import utils
-from xdog.coding.core.compaction.compaction import _extract_text, compact_messages, prepare_index
+from xdog.coding.core.compaction.compaction import compact_messages, prepare_index
 from xdog.coding.core.prompt_templates import COMPACTION_SUMMARY_TEMPLATE
 
 
@@ -24,7 +25,7 @@ def test_utilities_are_shared_without_changing_legacy_estimates():
     assert estimate_tokens("abc") == 0
     assert estimate_message_tokens(AssistantMessage(content=(ToolCall(arguments={"big": "x" * 50000}),))) == 210
     assert SUMMARY_TEMPLATE == COMPACTION_SUMMARY_TEMPLATE
-    assert _extract_text(UserMessage(content="text")) == "text"
+    assert extract_text(UserMessage(content="text")) == "text"
 
 
 async def test_whole_latest_user_turn_remains_unsplittable_and_no_summary_call():

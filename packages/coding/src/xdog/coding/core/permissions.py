@@ -94,35 +94,16 @@ def classify_tool_call(
     return ToolEffect(access="execute", scope="unknown")
 
 
-def tool_call_requires_approval(
-    mode: PermissionMode,
-    tool_name: str,
-    arguments: Mapping[str, Any],
-    *,
-    effect: ToolEffect | None = None,
-) -> bool:
-    """Classify whether a call needs an external decision under *mode*."""
-    if mode == "allow-all":
+def tool_call_requires_approval(mode: PermissionMode, effect: ToolEffect | None) -> bool:
+    """Use explicit host effects; unknown metadata cannot borrow a tool-name grant."""
+    if mode == 'allow-all':
         return False
-    if mode == "ask-all":
+    if mode == 'ask-all' or effect is None:
         return True
-
-    if effect is not None:
-        if effect.access == "read":
-            return False
-        if mode == "ask" and effect.access == "write" and effect.scope == "tool_data":
-            return effect.requires_approval
-        return True
-
-    # Legacy callers have no owned path classification; preserve the native
-    # read-only allowlist without doing synchronous IO in the approval hook.
-    # `deny` shares the safe read-only allowlist with `ask`; everything else is
-    # blocked without prompting.
-    if tool_name == "current_time":
+    if effect.access == 'read':
         return False
-    if tool_name == "filesystem":
-        action = arguments.get("action")
-        return not isinstance(action, str) or action not in _READ_ONLY_FS_ACTIONS
+    if mode == 'ask' and effect.access == 'write' and effect.scope == 'tool_data':
+        return effect.requires_approval
     return True
 
 
@@ -278,7 +259,7 @@ class PermissionManager:
         rule_key = _rule_key(tool_name, args, effect=effect)
         with self._lock:
             policy_revision = self._policy_revision
-            if not tool_call_requires_approval(self._mode, tool_name, args, effect=effect):
+            if not tool_call_requires_approval(self._mode, effect):
                 return None
             if self._mode == "deny":
                 return BeforeToolCallResult(block=True, reason="Tool call denied by permission policy")

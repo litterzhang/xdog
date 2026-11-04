@@ -16,8 +16,8 @@ SELECTION_FIELDS = {'active_tools', 'selection_revision', 'selection_mode'}
 
 
 def validate(value: Any, *, session_id: str, owner_id: str) -> dict[str, Any]:
-    fields = {'session_id', 'owner_id', 'model', 'api_enabled', 'tools'}
-    if (not isinstance(value, dict) or set(value) not in (fields, fields | SELECTION_FIELDS)
+    fields = {'session_id', 'owner_id', 'model', 'api_enabled', 'tools'} | SELECTION_FIELDS
+    if (not isinstance(value, dict) or set(value) != fields
             or value['session_id'] != session_id or value['owner_id'] != owner_id
             or not isinstance(session_id, str) or not 0 <= len(session_id.encode()) <= 256
             or not isinstance(owner_id, str) or not 0 <= len(owner_id.encode()) <= 256
@@ -33,14 +33,13 @@ def validate(value: Any, *, session_id: str, owner_id: str) -> dict[str, Any]:
                 or not isinstance(tool['parameters'], dict) or tool['name'] in names):
             raise ValueError('Invalid/duplicate public tool definition')
         names.add(tool['name'])
-    if 'active_tools' in value:
-        from xdog.agent.extensions.active_tools import names as validate_names
-        active = validate_names(value['active_tools'])
-        if (active is None or not set(active) <= names
-                or type(value['selection_revision']) is not int or value['selection_revision'] < 0
-                or value['selection_mode'] not in ('default', 'explicit')
-                or value['selection_mode'] == 'default' and set(active) != names):
-            raise ValueError('Invalid active/configured tool inventory relationship')
+    from xdog.agent.extensions.active_tools import names as validate_names
+    active = validate_names(value['active_tools'])
+    if (active is None or not set(active) <= names
+            or type(value['selection_revision']) is not int or value['selection_revision'] < 0
+            or value['selection_mode'] not in ('default', 'explicit')
+            or value['selection_mode'] == 'default' and set(active) != names):
+        raise ValueError('Invalid active/configured tool inventory relationship')
     try:
         return dict(json.loads(json_value(value, maximum=MAX_BYTES)))
     except McpError:
@@ -85,10 +84,10 @@ def page(snapshot: Any, *, query: str = '', offset: int = 0, revision: str = '')
         raise ValueError('Tool inventory offset is past the selected catalog')
     selected = [] if stale else rows[offset:offset + PAGE_SIZE]
     following = offset + len(selected)
-    selection = ({'selection_revision': data['selection_revision'], 'selection_mode': data['selection_mode'],
+    selection = {'selection_revision': data['selection_revision'], 'selection_mode': data['selection_mode'],
                   'active_tools': [row['name'] for row in selected if row['name'] in data['active_tools']],
                   'active_total': sum(row['name'] in data['active_tools'] for row in rows)}
-                 if 'active_tools' in data else {})
+
     return {**selection, 'session_id': data['session_id'], 'owner_id': data['owner_id'], 'model': data['model'],
             'api_enabled': data['api_enabled'], 'source': 'invocation-configured-tools', 'revision': serial,
             'status': 'stale' if stale else 'ok', 'query': query, 'offset': offset, 'total': len(rows),

@@ -1,12 +1,12 @@
-"""No event server alias remains; only historical message decoding is compatible."""
+"""No event server alias remains; no historical event codec is retained."""
 
-from dataclasses import replace
 from pathlib import Path
 
 
 def test_old_capability_host_is_not_shipped():
     repo = Path(__file__).resolve().parents[3]
-    for name in ('packages/coding/src/xdog/coding/core/external_events',
+    for name in ('packages/agent/src/xdog/agent/external_event.py',
+                 'packages/coding/src/xdog/coding/core/external_events',
                  'packages/eyes/src/xdog/eyes/transport',
                  'packages/eyes/src/xdog/eyes/handlers/session_notify.py',
                  'docs/eyes-host-protocol.md','docs/fixtures/eyes-host-v1.json'):
@@ -48,23 +48,3 @@ async def test_session_hint_refreshes_on_navigation_and_keeps_caller_environment
         assert coding_session.agent.tool_context['subprocess_env']=={'OTHER':'kept','XDOG_SESSION_ID':new}
     finally:
         await asyncio.wrap_future(runtime.close())
-
-
-def test_historical_event_survives_persistence_and_read_only_tui_projection(coding_session):
-    from xdog.agent import CustomAgentMessage
-    from xdog.coding.modes.interactive.components.chat_log import ChatLog
-    from xdog.coding.modes.interactive.session_presenter import SessionPresenter
-    from xdog.coding.modes.interactive.theme import create_default_theme
-    from xdog.tui.utils import strip_ansi
-
-    raw={'id':'old','registration_id':'old-observer','route_id':'old-route','delivery_ids':['old-delivery'],
-         'instruction':'Historical instruction','events':[{'id':'e','source_id':'files','detector_id':'changes',
-         'type':'file.modified','observed_at':1,'evidence':[{'path':'old.py'}]}]}
-    message = CustomAgentMessage(type='xdog.external_event.v1',data=raw)
-    coding_session.session_manager.save_session(replace(coding_session.session_data,messages=[message]))
-    saved = coding_session.session_manager.load_session(coding_session.session_id)
-    log = ChatLog(create_default_theme())
-    SessionPresenter(log).replay((),tuple(saved.messages))
-    output='\n'.join(strip_ansi(line) for line in log.render(120))
-    assert 'Historical instruction' in output and 'old.py' in output and 'not a human' in output
-    assert coding_session.runtime is None and coding_session.messages==[]

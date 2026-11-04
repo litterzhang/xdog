@@ -162,7 +162,7 @@ class GoalService:
                 if goal.status != 'paused':
                     raise ValueError('Resume only restores paused Goals; use activate for a satisfied wait')
                 require_user(context)
-            if (goal.status == 'waiting' and goal.wait_for in {'user', 'host'}
+            if (goal.status == 'waiting' and goal.wait_for == 'user'
                     and action in {'wait', 'activate', 'complete', 'pause'}):
                 require_user(context)  # An intermediate wait(tasks) is not a new delegation.
             if action in {'clear', 'update'}:
@@ -331,8 +331,8 @@ class GoalService:
             action, reason, requires_user = 'create', 'Goal is ' + goal.status + '; create a new Goal or clear it', True
         elif goal.status == 'paused':
             action, reason, requires_user = 'user_resume', goal.reason or 'Goal is paused', True
-        elif goal.status == 'waiting' and goal.wait_for in {'user', 'host'}:
-            action = 'user_input' if goal.wait_for == 'user' else 'host_recovery'
+        elif goal.status == 'waiting' and goal.wait_for == 'user':
+            action = 'user_input'
             reason, requires_user = goal.reason or f'Goal waits for {goal.wait_for}', True
         else:
             execution, delivery = info.get('execution', {}), info.get('delivery', {})

@@ -44,9 +44,8 @@ async def test_native_reset_commits_off_loop_and_reader_remains_responsive(gatew
         release.set()
         ack = await receive(reader, "reset_ack")
         assert ack["session_id"] != previous
-        assert contexts[0] == ["actual previous context"] and len(contexts) == 3
+        assert contexts[0] == ["actual previous context"] and len(contexts) == 2
         assert 'silent maintenance turn' in contexts[1][-1]
-        assert 'Prepare a context-rotation handoff' in contexts[2][-1]
         assert runtime._active_session is None
     finally:
         release.set()
@@ -105,10 +104,9 @@ async def test_cancelled_reset_settles_original_owner_and_preserves_readonly(gat
             assert current != previous and runtime._active_session is None and disposals == [owner]
         assert await asyncio.to_thread(runtime.transcript_store.get_access, current) == access
         assert contexts[0] == ["actual original context"]
-        assert len(contexts) == (1 if stage == 'preparation' else 3)
+        assert len(contexts) == (1 if stage == 'preparation' else 2)
         if stage == 'commit':
             assert 'silent maintenance turn' in contexts[1][-1]
-            assert 'Prepare a context-rotation handoff' in contexts[2][-1]
     finally:
         release.set()
         await asyncio.gather(work, return_exceptions=True)

@@ -199,14 +199,6 @@ class InboxStore:
         sequences = [row.sequence for _, row in result.values() if row.sequence]
         if len(set(sequences)) != len(sequences):
             raise ValueError('Duplicate inbox intake sequence')
-        next_sequence = max([self._sequence(directory), *sequences])
-        for key, (path, row) in sorted(result.items()):
-            if row.sequence == 0:
-                next_sequence += 1
-                self._save_sequence(directory, next_sequence)
-                row = replace(row, sequence=next_sequence)
-                path = self._save(directory, row, path)
-                result[key] = path, row
         return result
 
     @staticmethod

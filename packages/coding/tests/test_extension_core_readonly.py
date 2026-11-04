@@ -101,7 +101,7 @@ def session(tmp_path, names=(), settings=None):
                                       skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"),
                                       config=AgentConfig(model='offline/model', context_window=4000)),
         session_data=store.create_session(working_dir=tmp_path, model='offline/model'), session_manager=store,
-        settings=SettingsManager(global_path=config), working_dir=tmp_path, tool_repo=None, bash=None,
+        settings=SettingsManager(global_path=config), working_dir=tmp_path, tool_repo=None,
         permissions=PermissionManager('deny'))
     return parent, calls
 

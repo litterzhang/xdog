@@ -9,7 +9,7 @@ import pytest
 from xdog.tui.attachments import AttachmentComposer, AttachmentReader, attachment, read_attachment
 from xdog.tui.components.input_panel import InputPanel
 from xdog.tui.keys import KeyEvent
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j5ioAAAAASUVORK5CYII=")
 
@@ -111,7 +111,7 @@ def test_editor_image_only_submit_and_summary_stays_within_tiny_budget():
         editor.set_render_budget(height)
         rows = editor.render(16)
         assert len(rows) <= height
-        assert all(visible_width(row) <= 16 for row in rows)
+        assert all(string_width(row) <= 16 for row in rows)
     editor.handle_input(KeyEvent("enter"))
     assert sent == [""]
     editor.set_attachment_summary("")

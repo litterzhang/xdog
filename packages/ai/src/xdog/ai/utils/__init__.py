@@ -10,7 +10,7 @@ from xdog.ai.utils.hash import sha256_hex, stable_hash
 from xdog.ai.utils.json_parse import parse_partial_json
 from xdog.ai.utils.overflow import estimate_token_count, is_context_overflow
 from xdog.ai.utils.sanitize_unicode import sanitize_unicode
-from xdog.ai.utils.validation import validate_tool_arguments
+from xdog.ai.utils.validation import validate_tool_arguments, validate_tool_schema
 
 __all__ = [
     "EventStream",
@@ -21,4 +21,5 @@ __all__ = [
     "sha256_hex",
     "stable_hash",
     "validate_tool_arguments",
+    "validate_tool_schema",
 ]

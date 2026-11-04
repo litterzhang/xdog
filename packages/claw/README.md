@@ -235,61 +235,71 @@ Weixin proactive messages use an unambiguous verified owner binding, never the
 latest sender. Ordinary replies remain pinned to their original sender/context;
 legacy latest-peer map files are retained unchanged but no longer read or written.
 
-An optional `xhs` channel uses an independently operated local
-`xiaohongshu-mcp` HTTP backend. Claw does not install/start that backend or log in
-on discovery. Explicit login binds the verified platform account and nickname
-separately from group personality and commenter identities:
+The optional `xhs` channel uses the Python `xiaohongshu-cli` SDK (pinned to
+0.6.4+xdog.1 with the `browser` extra), not a separately operated HTTP backend. Adapter, login and resource
+ownership stay inside Claw; the SDK is installed only with the `xhs` extra:
 
 ```bash
-uv run xdog-claw channel login --xhs --group main --base-url http://127.0.0.1:18060
+# Local development: ../xiaohongshu-cli must contain the modified fork.
+uv sync --all-packages --extra xhs
+# Prepare CloakBrowser in the caller's normal HOME (not a group cookie directory):
+uv run --package xdog-claw --extra xhs cloakbrowser login
+uv run --package xdog-claw --extra xhs cloakbrowser install
+# In this uv workspace, from an authorized graphical session:
+uv run --package xdog-claw --extra xhs xdog-claw channel login --xhs --group maotao
+uv run --package xdog-claw --extra xhs xdog-claw gateway start
 ```
 
-Export the backend's shared access token using `xhs_token_env` (default
-`XHS_API_TOKEN`) in the same shell first. Backend HTTP 401/403 is access denial,
-not QR expiry or proof that the website login failed; the CLI reports it separately.
+Configure the target group first. Explicit login binds the verified platform
+account and nickname separately from the group persona and commenter identities.
+The SDK renders its current QR directly in the terminal and polls that challenge;
+there is no manual Enter confirmation, HTTP backend token, status browser or
+Claw-owned daemon. QR login uses a short-lived subprocess from the **same Python
+environment**, with an isolated temporary HOME. It exits after login and is
+terminated/reaped on cancellation. It does not import cookies from a user's
+browser or download a browser runtime on gateway startup.
 
-When scanning is needed, the CLI displays the supplied QR PNG directly in the
-terminal, with a saved-image path as a fallback. Standard axis-aligned QR images
-are reduced to their verified module grid, not arbitrary terminal-width pixels;
-wide terminals do not inflate the symbol. A 53-module code takes 61 columns and
-31 rows including its white quiet border. A terminal too narrow for complete
-modules must be widened, or use the saved PNG instead. No QR payload is decoded
-or replaced, and no graphical desktop is required for terminal scanning.
+Cookies are private, group-scoped files under
+`<data_dir>/xhs/accounts/<group-hash>/.xiaohongshu-cli/cookies.json`.
+QR login calls the fork's public `qrcode_login()` and exports its verified result
+into the isolated candidate HOME. It does not call private QR helpers or interpret
+browser protocol/status strings. Python CloakBrowser owns browser control, fixed
+at `headless=False, humanize=True`. There is no Claw browser/virtual-display runtime,
+Camoufox dependency or headless fallback. There is no DISPLAY/Wayland preflight,
+SSH restriction or automatic desktop-environment injection. The SDK/OS decides
+whether the browser can start; actual failures remain safe diagnostics.
 
-Scan the **latest** QR promptly, confirm successful login in the app, then press
-**Enter in the CLI** to verify and bind it. There is deliberately **no status
-polling while you scan**: v2.5.5's status read starts a new website browser and
-creates another platform QR. The CLI's host-local file lease also defers this
-Claw gateway's identity checks during the scan (`login_pending`), and rejects
-parallel explicit logins before another QR is requested. Process exit releases
-the lease automatically; it is synchronization, not a second service or login
-state database. Other applications sharing the backend must also avoid status
-checks/new QR requests while a scan is in progress. No backend cookies or browser
-internals are read by Claw.
+The subprocess keeps `CLOAKBROWSER_CACHE_DIR` at the caller's prepared path
+(default `~/.cloakbrowser`) while isolating XHS cookies. Thus the SDK reuses its
+license and browser without copying the license into group storage. License keys
+are inherited privately, never placed on argv or in account metadata. The vendor
+may download/update its managed browser during explicit login; prepare it first.
+Gateway startup/polling never performs interactive browser login.
 
-A new backend QR request replaces the preceding scan session; do not scan an old
-scrollback image. If the app reports expiry, stop the current CLI with Ctrl+C and
-run login again for a fresh challenge. The CLI respects the backend's advertised
-scan-wait window (four minutes for v2.5.5), not an eight-minute local wait; this
-window is not a guarantee of the platform QR's validity. No automatic QR refresh
-can replace an in-progress scan. Each login owns a separate private PNG, removed
-when its wait ends; already authenticated accounts need no new QR.
+This unpublished fork has a distinct local version so the old PyPI package cannot
+silently satisfy it. The root uv source is the relative editable sibling checkout,
+not an absolute path in wheel metadata. **A standalone checkout/CI/release is not
+portable until the fork is published or replaced with an accessible pinned Git
+source.** Do not publish this development dependency as if it were on PyPI.
 
+Candidate cookies are independently verified before publication; a failed scan or
+verification retains the existing credentials and binding. A host-local lease
+pins credentials throughout scans, explicit post reads and actual submissions;
+a concurrent login cannot swap the verified account before a write. SDK network
+operations run in owned off-loop work, not the gateway event loop; SDK clients are
+closed after each operation. Replies and publishing use exactly one SDK transport
+attempt, never its default write retries.
 
-Login-status reads tolerate up to three attempts for transient network/timeout and
-HTTP 408/500/502/503/504 failures. Auth denials, rate limits and invalid responses
-fail closed; QR creation and comment/publish requests are never automatically
-replayed. If the CLI reports a backend failure after scanning, keep the cookies
-and retry login to recheck the account rather than deleting the session.
+Missing extras or expired credentials are visible as `dependency_missing` /
+`login_required`; polling never performs interactive login.
 
-Comment replies use the original comment ID captured at intake. Sending does not
-refetch the moving notification window or require the original comment to remain
-in it. Current account identity, saved group/account binding, reply enablement and
-the frozen comment target remain enforced; uncertain submissions are not replayed.
-HTTP reply failures retain a bounded, allowlisted backend failure stage (for example
-`reply_target_mismatch` or `submit_unconfirmed`), not raw page/account diagnostics.
-These are diagnostic hints, never proof that no platform action occurred or
-permission to automatically retry. Older generic error records remain unchanged.
+Comment replies use the exact original **post + comment IDs** captured at intake.
+Sending does not refetch the moving notification window. Account identity, group
+binding, reply enablement and the original target remain enforced. The optional
+post-reading tool reads only the original post when explicitly called; it does
+not eagerly fetch post context or expose SDK cookies/token caches. Mentions are
+cursor-paged with a bounded 200-item scan; unknown or incomplete comment targets
+are not guessed. Saturation and missing cursor progress are not silently complete.
 
 Use the existing group persona, then explicitly configure `xhs_replies_enabled` and/or
 `xhs_publish_enabled` (both default false). `message(action="channels")` lists
@@ -299,15 +309,15 @@ text=..., images=["poster.png"])`. Images must be bounded workspace files and ar
 frozen before sending; arbitrary recipients, URLs and multicast are not accepted.
 The existing output journal owns both ordinary replies and posts.
 
-The pinned browser backend supplies no independently verifiable delivery receipt:
-HTTP success remains **unknown**, never `delivered` or an automatic resend.
+An SDK submission does not prove public visibility or moderation acceptance:
+it remains **unknown**, never `delivered` or an automatic resend.
 Initial comment scans establish a baseline without replying to history; gaps,
 edits, login changes and account-revision fences are explicit. Private messages
 and a per-output review UI are not implemented. Default tests use synthetic
 HTTP/model fixtures and never send a real comment/post.
 
 See [identity/XHS design and configuration](../../docs/claw-input-identity-design.md)
-for permissions, lifecycle and the superseding changes to the earlier proposal.
+for permissions and lifecycle.
 
 ### Identity tool permissions and original posts
 
@@ -345,7 +355,7 @@ History labels come from persisted host actor markers and exact original
 input/attempt/tool receipts, never from nicknames or a model's claims. Older
 messages without those facts show `unknown`/`无投递记录`; a destination is not proof
 that anything was sent. XHS's `unknown` receipt displays as `未确认`, including when
-the browser backend reports submission success. It does not prove public visibility
+the SDK reports submission success. It does not prove public visibility
 or moderation status and never authorizes an automatic resend.
 
 The TUI subscribes to group-scoped completion views for channel/ACP inputs through
@@ -353,6 +363,18 @@ its existing Native connection (`input_updates: 1`). These are read-only views o
 ordinary accepted inputs, not extra sends to TUI, new execution, steering or human
 authorization. They preserve unsent drafts and do not enter the local input history.
 The existing ACP-only subscription retains its narrower behavior.
+
+The main TUI timeline loads the group's canonical sessions oldest first, with
+session separators, context handoffs and compaction summaries. Handoffs default to
+a short reason/status/session preview; Ctrl+O details and the transcript retain
+the full display text. Historical tool
+calls remain scoped to their original session; archived Agents, tool selections
+and permissions are never restored. The header, token usage and controls still
+refer only to the current execution session. An external completion from another
+session invalidates the display and triggers a read-only current-group refresh;
+it cannot select that event's session or replay work. Reconnecting also refreshes
+history when the current session ID has not changed. Unsent drafts are preserved.
+
 
 ## Interactive terminal
 
@@ -766,6 +788,15 @@ SDK path described below.
 
 
 ### Gateway-owned read-only history and context rotation
+
+Rotation keeps short context as original excerpts rather than asking a model to
+expand it. Larger handoffs use a dedicated compact prompt, not the compaction
+report format. Accepted notes are at most 1,200 characters and half the retained
+evidence body; they replace their input excerpts. Failed or oversized notes retain
+bounded source evidence instead of being silently cut. Managed daily-memory
+maintenance still runs independently, under the original tool policy. Original
+JSONL, actor attribution, source references and atomic rotation fences are unchanged.
+
 
 **Alt+R / `/sessions`** opens the group's searchable archived-session browser;
 `/tree` inspects historical checkpoints and legacy branch records, not executable
@@ -1383,7 +1414,7 @@ Complex extension forms are removed; basic child dialogs retain these ownership 
 
 ### Child specialization and resource boundaries
 
-`/agents start --label Reviewer --instructions "Inspect only" --tools filesystem,current_time
+`/agents start --label Reviewer --system-prompt "Inspect only" --tools filesystem,current_time
 --fresh -- TASK` specializes a child without
 changing parent permissions. Options precede the task; `--` preserves a task that
 starts with flags. Plain tasks preserve quotes/newlines. `--tools none` gives the
@@ -1395,7 +1426,7 @@ selects only available parent skill bodies (`--skills none` selects none).
 Action/scoped grants use JSON settings, not invented command-line flags.
 
 In `/agents` press `n`, then Ctrl+G for settings JSON. Supported keys are `label`,
-`instructions`, `system_prompt`, `tools` (array or null for the delegable parent
+`system_prompt`, `tools` (array or null for the delegable parent
 subset), `skills`, `tool_actions`, `tool_scopes`, `inherit_context`, `model`,
 `thinking` and `preset`. `inherit_context` must be false; new children never copy
 parent conversation/system context. Enter applies the settings draft only;
@@ -1403,8 +1434,7 @@ start review requires every page to be painted before confirmation. Resize inval
 that review. This confirmation does NOT approve tool use. Effective settings persist
 with child results and appear in complete child source. The removed `--timeout`,
 `--calls`, `--tokens` flags and `timeout`/`max_model_calls`/`max_tokens` child config
-keys are rejected on new starts; historical saved values are inert compatibility
-data, not restored limits. Actual model output/context options remain separate from
+keys are rejected in both new and saved configurations. Actual model output/context options remain separate from
 a removed cumulative child token quota; usage is not exact billable accounting.
 `--fresh` explicitly selects the no-parent-history behavior (also the default);
 `inherit_context: true` is rejected. It does not remove parent validation/context
@@ -1495,7 +1525,7 @@ using this descriptor shape:
     "reviewer": {
       "description": "Inspect and report without workspace mutations",
       "config": {
-        "instructions": "Review requested code; return findings with file locations.",
+        "system_prompt": "Review requested code; return findings with file locations.",
         "tools": ["filesystem", "current_time"],
         "inherit_context": false
       }
@@ -1952,7 +1982,8 @@ Claw's read-only session bridge uses `extension_session:1` and
 `extension_session_inspection:1`; terminal command-menu inspection separately uses
 `extension_command_catalog:1` and its generation. No editor/navigation/mutation
 capability or separate extension name/active-tools flag is needed. Native
-`session_name_read` and `tool_inventory_selection` controls remain independent.
+`session_name_read` remains independent; tool inventories always include current
+selection metadata, with no older snapshot format.
 Session/tree catalogs read the bound backend directly; listing them does not grant
 plugin navigation authority.
 
@@ -3116,8 +3147,8 @@ it without a hard-coded fallback. `/keys` shows the current binding.
 
 Save and recovery use a **standalone primary-draft surface**, never the child
 browser. `/draft restore [SNAPSHOT_ID]` opens an explicit selector of at most **32**
-snapshots or loads one exact ID. `/draft saved [SNAPSHOT_ID]` remains an alias;
-`/draft saved list` opens the same bounded selector, not a management catalog.
+snapshots or loads one exact ID. Old `/draft saved` and `/draft saved list`
+aliases are removed; this selector is not a management catalog.
 Each entry discloses its ID and stored action/slot, scope and label; Enter opens
 full text/provenance/image-digest review before any restore can be confirmed.
 There is no primary catalog/delete/search management UI or automatic latest-slot
@@ -3279,3 +3310,29 @@ Live pagination is bounded; follow the returned continuation offsets. Historical
 content and handoffs are evidence, not new permissions or permission to replay work.
 
 See [context continuity design and verification](https://github.com/litterzhang/xdog/blob/main/docs/claw-context-continuity.md).
+
+### Compact message hierarchy
+
+The TUI keeps message bodies primary. Dim compact labels show only essential
+identity/source, destination and actual delivery state; unknown delivery is never
+presented as success. Full session/input/output/tool IDs, receipt facts, handoff
+provenance and the Unix connection endpoint remain in existing Ctrl+O details,
+not repeated in every header. Details use a bounded metadata whitelist, not raw
+host context or channel credentials. Connection notices follow history replay
+and use the same inspectable system-message component. Canonical message bodies,
+transcripts, identity permissions and reply routing are unchanged by this display.
+
+### Removed interfaces and stored formats
+
+No old planning state is converted into access permissions. Current saved sessions
+must contain explicit access metadata; old planning sidecars/records are rejected,
+not migrated. A completed child needs its current safe SDK snapshot to continue;
+there is no history-based reconstruction or read-only compatibility continuation.
+Child task knowledge belongs in the explicit task; the removed `instructions`
+field/flag is not accepted. Use `system_prompt` only for an explicitly selected
+child-owned role. Current permissions/owner checks still apply.
+
+Claw exports `TranscriptStore`, not `SessionManager`. Missing/corrupt session
+catalogs are not reconstructed from older indexes or guessed archive ownership.
+Input databases require the current timestamp schema; startup never adds missing
+columns or invents historical execution facts. Existing files are left untouched.

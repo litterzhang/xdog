@@ -11,9 +11,8 @@ from xdog.tui.transcript_browser import TranscriptRecord
 def inventory_records(snapshot: dict[str, Any]) -> tuple[TranscriptRecord, ...]:
     # Application hosts independently validate the full owner-bound envelope.
     model, enabled, tools = snapshot['model'], snapshot['api_enabled'], snapshot['tools']
-    active = set(snapshot['active_tools']) if 'active_tools' in snapshot else None
-    selection = ('Selection: unknown (legacy snapshot)' if active is None else
-                 f'Selection: {snapshot["selection_mode"]} · selected {len(active)} / {len(tools)} configured'
+    active = set(snapshot['active_tools'])
+    selection = (f'Selection: {snapshot["selection_mode"]} · selected {len(active)} / {len(tools)} configured'
                  f' · revision {snapshot["selection_revision"]}')
     summary = (f'Model: {model}\nConfigured definitions: {len(tools)}\n'
                f'{selection}\n'
@@ -24,8 +23,7 @@ def inventory_records(snapshot: dict[str, Any]) -> tuple[TranscriptRecord, ...]:
     for tool in tools:
         schema = json.dumps(tool['parameters'], ensure_ascii=False, allow_nan=False, sort_keys=True,
                             separators=(',', ':'))
-        status = ('unknown (legacy snapshot)' if active is None else
-                  'selected' if tool['name'] in active else 'excluded')
+        status = 'selected' if tool['name'] in active else 'excluded'
         records.append(TranscriptRecord('tools:' + tool['name'], 'tool', tool['name'],
             'Name: ' + tool['name'] + '\nSelection: ' + status + '\n' + tool['description']
             + '\nSchema (exact JSON):\n' + schema))

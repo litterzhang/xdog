@@ -51,6 +51,8 @@ class AgentEventStream(Generic[E]):
         self._final_event: E | None = None
         self._cleanup_events: deque[E] = deque()
         self._closed = False
+        self._failure: BaseException | None = None
+        self._producer: asyncio.Task[None] | None = None
         self._listeners: list[Callable[[E], Any]] = []
         # Result support (matches ai.utils.event_stream.EventStream)
         try:
@@ -120,6 +122,65 @@ class AgentEventStream(Generic[E]):
         self._ready.set()
         self._space.set()
 
+    def fail(self, error: BaseException) -> None:
+        """Close with the same failure for iteration and result, not an empty success."""
+        if self._closed:
+            return
+        self._failure = error
+        self._closed = True
+        if not self._result_future.done():
+            self._result_future.set_exception(error)
+            # Iteration-only consumers also observe the failure below. Reading
+            # here prevents an unhandled Future warning without changing await.
+            self._result_future.exception()
+        self._ready.set()
+        self._space.set()
+
+    def bind_producer(self, task: asyncio.Task[None]) -> None:
+        """Adopt exactly the public stream factory's producer, never an Agent owner."""
+        if self._producer is not None:
+            raise RuntimeError('Stream already owns a producer')
+        self._producer = task
+
+        task.add_done_callback(self._producer_settled)
+
+    def _producer_settled(self, producer: asyncio.Task[None]) -> None:
+        if producer.cancelled():
+            self.fail(asyncio.CancelledError())
+        elif (error := producer.exception()) is not None:
+            self.fail(error)
+        elif not self._closed:
+            self.end()
+
+    async def aclose(self) -> None:
+        """Explicitly cancel/join an adopted producer; effects cannot be undone.
+
+        Merely detaching an event reader does not cancel application execution.
+        Streams published by Agent keep that Agent's existing ownership instead.
+        """
+        from xdog.agent.async_work import wait_owned
+
+        prior_failure = self._failure
+        producer = self._producer
+        if producer is not None:
+            if producer is asyncio.current_task():
+                raise RuntimeError('Producer cannot await its own close')
+            if not producer.done():
+                producer.cancel()
+            async def join() -> None:
+                try:
+                    await producer
+                except asyncio.CancelledError:
+                    pass  # The explicitly requested cancellation itself is not a close failure.
+                finally:
+                    self._producer_settled(producer)  # Do not race a queued done callback with end().
+                if (self._failure is not None and self._failure is not prior_failure
+                        and not isinstance(self._failure, asyncio.CancelledError)):
+                    raise self._failure
+            await wait_owned(asyncio.create_task(join()))
+        if not self._closed:
+            self.end()
+
     async def close(self) -> None:
         self.end()
 
@@ -170,6 +231,8 @@ class AgentEventStream(Generic[E]):
                 if self._final_event is not None:
                     final, self._final_event = self._final_event, None
                     yield final
+                if self._failure is not None:
+                    raise self._failure
                 return
             else:
                 self._ready.clear()

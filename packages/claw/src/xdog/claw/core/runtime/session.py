@@ -179,7 +179,7 @@ class AgentSession:
                 and native_metadata is None):
             raise ValueError("Saved native model unavailable on configured adapter; no fallback")
         if (native_metadata is not None and data.saved_model
-                and (native_metadata.model_type != "chat" or not native_metadata.supports_streaming
+                and (native_metadata.model_type != "chat" or native_metadata.supports_streaming is False
                      or native_metadata.context_window <= 0)):
             raise ValueError("Saved native model is no longer a streaming chat model; no fallback")
         if native_metadata is not None:

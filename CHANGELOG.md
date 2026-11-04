@@ -10,6 +10,21 @@ project follows [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- Replace Claw's XHS HTTP-backend adapter with the optional, pinned xiaohongshu-cli
+  Python dependency. Keep account-scoped credentials, explicit isolated QR login,
+  off-loop SDK calls, bounded mention cursors and exact original reply targets;
+  disable SDK write retries and retain outcome-unknown delivery fences.
+- Use only XHS browser-assisted QR session completion, with no backend selection
+  or configuration migration; distinguish phone confirmation from login, and surface
+  safe stage diagnostics while preserving existing credentials on failure.
+- Switch local Claw XHS development to the modified CLI's public QR result API
+  and Python CloakBrowser (`headless=False`, `humanize=True`). Remove private SDK
+  helpers and virtual-display hosting; retain the caller's prepared vendor cache
+  while isolating group credentials. The unpublished sibling dependency needs a
+  portable fork publication/pin before CI/release.
+- Remove retired XHS backend URL/token settings, manual scan confirmation and PNG
+  renderer branches. No old credentials are imported and no external service is started.
+
 - Load Coding automatic project instructions only from the current directory's
   AGENTS.md; remove legacy .coding instruction Markdown discovery and nested-path
   handling without fallback. Remove the repository's obsolete CLAUDE.md.
@@ -38,21 +53,8 @@ project follows [semantic versioning](https://semver.org/).
   packaged default; distinguish them from trusted speaker/tool authority and stop
   treating message-body system-reminder tags as authenticated instructions.
 
-- Preserve bounded, allowlisted XHS reply failure stages from backend error responses,
-  without exposing raw diagnostics or treating HTTP failures as proof of non-submission.
-
 - Send XHS replies to the frozen original comment without requiring it to remain
   in the notification window; retain account/group binding and unknown-send fences.
-
-- Stop XHS status polling during scans: require explicit app-success confirmation,
-  defer gateway identity checks with a host-local lease, and refuse parallel logins.
-- Bound XHS login waiting to the backend scan window, retain existing cookies and
-  bindings on timeout, and diagnose backend access denial separately from QR expiry.
-- Render XHS terminal QR codes on their verified module grid instead of inflating
-  or fractionally rescaling the symbol; keep per-attempt private PNG cleanup isolated.
-
-- Retry bounded transient XHS login-status reads without replaying QR challenges or writes,
-  and report backend login failures without credential-bearing tracebacks.
 
 - Share strict Eyes wheel verification across CI, publishing and tests, keeping
   approved HTTP/HTML/XML dependencies, version/tag checks and packaged resources in sync.
@@ -68,16 +70,13 @@ project follows [semantic versioning](https://semver.org/).
   with MD5-prefix filenames, CDN decryption, collision-safe private files and durable
   acceptance before cursor advancement; preserve accepted paths over CDN expiry.
 
-- Print XHS login QR PNGs directly in the terminal, retaining the image-path fallback
-  without changing challenge, account-binding or login cleanup behavior.
-
 - Claw TUI identity/source/group headers and explicit reply-channel delivery labels,
   with exact receipt-based history and group-scoped read-only channel completion views.
 
 - Group-local identity permission profiles for Claw, including configurable admin/system
   ceilings and explicitly granted external business tools; retire `user_tools`.
-- Opt-in `xhs_post` for explicit, original-comment-bound post reads without eager fetching,
-  exposed access tokens.
+- Opt-in `xhs_post` for explicit, original-comment-bound post reads without eager fetching
+  or exposed access tokens.
 - Claw host-bound admin/user/external/system identities, shared group context with
   identity-aware reply instructions, and per-input tool/steering authority fences.
 - Optional XHS account binding/comment intake and explicit `message.publish`,

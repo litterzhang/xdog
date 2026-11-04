@@ -10,7 +10,7 @@ from typing import Callable
 from xdog.tui.tui import Component
 from xdog.tui.utils import (
     apply_background_to_line,
-    visible_width,
+    string_width,
     wrap_text_with_ansi,
 )
 
@@ -62,8 +62,6 @@ class Text(Component):
         self.set_text(value)
 
     def render(self, width: int) -> list[str]:
-        # Legacy cell-buffer model
-        # New string-based model
         return self._render_lines(width)
 
     def _render_lines(self, width: int) -> list[str]:
@@ -106,7 +104,7 @@ class Text(Component):
                     apply_background_to_line(line_with_margins, width, self._bg_fn)
                 )
             else:
-                vis_len = visible_width(line_with_margins)
+                vis_len = string_width(line_with_margins)
                 padding_needed = max(0, width - vis_len)
                 content_lines.append(line_with_margins + " " * padding_needed)
 
@@ -134,7 +132,3 @@ class Text(Component):
         """Return the number of lines this text renders at the given width."""
         lines = self._render_lines(width)
         return max(1, len(lines))
-
-
-# Backward compatibility alias
-TextComponent = Text

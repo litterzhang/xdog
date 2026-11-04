@@ -14,7 +14,8 @@ def request(identifier="one"):
 
 
 def document():
-    return McpDocument("fixture", "resource", "fixture://text", (McpBlock("user", text="x" * 200000),))
+    return McpDocument("fixture", "resource", "fixture://text", (
+        McpBlock("user", text="x" * 200000, content_type="text"),))
 
 
 async def wait(predicate):
@@ -61,8 +62,8 @@ async def test_sender_coalesces_and_cancels_remote_work_without_blocking_control
 async def test_cancel_during_spooling_settles_one_file_owner_before_successor():
     entered, release = threading.Event(), threading.Event()
     files, calls, frames = [], [], []
-    def prepare(value, *, content_types=True):
-        file, size, checksum = spool_mcp_data(value, content_types=content_types)
+    def prepare(value):
+        file, size, checksum = spool_mcp_data(value)
         files.append(file)
         if len(files) == 1:
             entered.set()
@@ -163,30 +164,19 @@ async def test_opaque_completion_transport_keeps_reference_value_and_context_as_
         await sender.close()
 
 
-async def test_typed_empty_binary_roundtrip_and_legacy_refusal_do_not_downgrade_or_replay():
-    import json
-
+async def test_typed_empty_binary_roundtrip_cannot_downgrade_to_text():
     import pytest
     from xdog.agent.mcp.stdio import McpError
+    from xdog.claw.channels.tui.mcp_data import _decode
 
     empty = McpDocument('peer', 'resource', 'test://empty', (
         McpBlock('resource', data='', mime_type='audio/wav', content_type='audio'),))
     file, _size, _checksum = spool_mcp_data(empty)
     try:
-        from xdog.claw.channels.tui.mcp_data import _decode
         decoded = _decode(file)
         assert decoded == empty and '0 bytes' in decoded.text
         with pytest.raises(McpError, match='Binary'):
             decoded.draft_text()
-    finally:
-        file.close()
-    with pytest.raises(ValueError, match='updated typed-content viewer'):
-        spool_mcp_data(empty, content_types=False)
-    nonempty = McpDocument('peer', 'resource', 'test://data', (
-        McpBlock('resource', data='AA==', content_type='resource_blob'),))
-    file, _size, _checksum = spool_mcp_data(nonempty, content_types=False)
-    try:
-        assert 'content_type' not in json.load(file)['document']['blocks'][0]
     finally:
         file.close()
     calls, frames = [], []
@@ -195,34 +185,29 @@ async def test_typed_empty_binary_roundtrip_and_legacy_refusal_do_not_downgrade_
         return empty
     async def write(value):
         frames.append(value)
-    sender = McpSender(fetch, lambda _: ('session', 1), write, content_types=lambda: False)
+    sender = McpSender(fetch, lambda _: ('session', 1), write)
+    events = []
+    receiver = McpDataReceiver(events.append)
+    receiver.expect('one', 'main', 'session')
     try:
         sender.request(request())
-        await wait(lambda: bool(frames))
-        assert len(calls) == 1 and [frame['type'] for frame in frames] == ['mcp_data_error']
-        assert 'updated typed-content viewer' in frames[0]['error']
+        await wait(lambda: frames and frames[-1]['type'] == 'mcp_data_end')
+        for frame in frames:
+            receiver.feed(frame)
+        assert len(calls) == 1 and events[-1]['records'] == empty
     finally:
+        receiver.close()
         await sender.close()
 
 
-async def test_content_type_capability_withdrawal_during_remote_read_cannot_commit_old_format():
-    flags, frames = [True], []
-    entered, release = asyncio.Event(), asyncio.Event()
-    async def fetch(value):
-        entered.set()
-        await release.wait()
-        return document()
-    async def write(value):
-        frames.append(value)
-    sender = McpSender(fetch, lambda _: ('session', 1), write, content_types=lambda: flags[0])
-    try:
-        sender.request(request())
-        await entered.wait()
-        flags[0] = False
-        release.set()
-        await wait(lambda: bool(frames))
-        assert [frame['type'] for frame in frames] == ['mcp_data_error']
-        assert 'capability changed' in frames[0]['error']
-    finally:
-        release.set()
-        await sender.close()
+def test_untyped_native_mcp_documents_are_rejected():
+    import io
+    import json
+
+    import pytest
+    from xdog.claw.channels.tui.mcp_data import _decode
+
+    document = {'server': 'peer', 'kind': 'resource', 'name': 'old', 'blocks': [
+        {'role': 'resource', 'text': 'metadata', 'mime_type': '', 'data': '', 'uri': 'test://old'}]}
+    with pytest.raises(TypeError):
+        _decode(io.StringIO(json.dumps({'kind': 'document', 'document': document})))

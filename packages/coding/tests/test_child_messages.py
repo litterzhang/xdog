@@ -19,7 +19,7 @@ from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
 from xdog.coding.modes.interactive.theme import create_default_theme
 from xdog.tui.keys import KeyEvent
 from xdog.tui.transcript_browser import TranscriptBrowser
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 class Supervisor:
@@ -190,7 +190,7 @@ def test_wrapped_long_titles_body_and_preview_notice_share_the_gutter(expanded):
     assert compact(message.detail_title) in compact(text)
     assert '   abcdefg' in rows and '   hijklmn' in rows
     assert ('Previewonly' in compact(text)) == (not expanded)
-    assert all(visible_width(row) <= 10 for row in rows)
+    assert all(string_width(row) <= 10 for row in rows)
 
 
 def test_tiny_unicode_widths_have_no_gutter_overflow_or_ansi_fragments():
@@ -203,7 +203,7 @@ def test_tiny_unicode_widths_have_no_gutter_overflow_or_ansi_fragments():
         message.set_expanded(expanded)
         for width in range(41):
             rows = message.render(width)
-            assert all(visible_width(row) <= width for row in rows)
+            assert all(string_width(row) <= width for row in rows)
             assert all('\n' not in row and '\r' not in row for row in rows)
             if width >= 4:
                 assert sum(gray('•') in row for row in rows) == 1
@@ -265,7 +265,7 @@ def session_for(tmp_path, stream):
                                     skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared")),
         session_data=store.create_session(model='offline/test', working_dir=tmp_path), session_manager=store,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_repo=None, bash=None)
+        tool_repo=None)
 
 
 async def poll_until(ui, predicate):
@@ -440,7 +440,7 @@ def test_child_preview_notice_and_all_wrapped_rows_are_dim_but_body_is_not(width
     notice_rows = rows[first + 4:]
     assert notice_rows
     assert all(row.startswith('   \x1b[90m') and row.endswith('\x1b[39m') for row in notice_rows)
-    assert all(visible_width(row) <= width for row in rows)
+    assert all(string_width(row) <= width for row in rows)
     assert message.detail_body == body
     message.set_expanded(True)
     expanded = '\n'.join(message.render(width))
@@ -484,7 +484,7 @@ def test_child_metadata_uses_dim_and_accent_never_error_colors_or_body_markup(st
         assert message.render(160) is rows
         for width in range(4, 41):
             wrapped = message.render(width)
-            assert all(visible_width(row) <= width for row in wrapped)
+            assert all(string_width(row) <= width for row in wrapped)
             # Styling/wrapping does not drop any title character, including Unicode.
             plain = ''.join(strip_ansi(row)[3:] for row in wrapped)
             if width >= 5:  # A three-cell gutter plus a two-cell CJK glyph must fit.

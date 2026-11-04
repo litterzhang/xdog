@@ -3,7 +3,7 @@ from xdog.tui.components.markdown import MarkdownTheme
 from xdog.tui.components.messages import AssistantMessages, NormalMessage, ThinkingMessage, Transcript
 from xdog.tui.components.text import Text
 from xdog.tui.components.tool_message import ToolMessage
-from xdog.tui.utils import sanitize_terminal_text, strip_ansi, visible_width
+from xdog.tui.utils import sanitize_terminal_text, string_width, strip_ansi
 
 
 def test_transcript_keeps_thinking_and_prose_as_independent_stable_messages():
@@ -53,7 +53,7 @@ def test_tool_component_owns_branches_and_never_emits_multiline_rows():
     for width in (12, 40, 100):
         rows = tool.render(width)
         assert all("\n" not in row and "\r" not in row for row in rows)
-        assert all(visible_width(row) <= width for row in rows)
+        assert all(string_width(row) <= width for row in rows)
     assert "└" in strip_ansi(tool.render(100)[1])
     assert tool.detail_body == "old\nlatest"
 
@@ -117,7 +117,7 @@ def test_message_gutters_stay_bounded_for_tiny_unicode_and_styled_content():
     for message in (UserMessage(source, MarkdownTheme(), style), NormalMessage(source, MarkdownTheme())):
         for width in range(17):
             rows = message.render(width)
-            assert all(visible_width(row) <= width for row in rows)
+            assert all(string_width(row) <= width for row in rows)
             assert all("\n" not in row and "\r" not in row for row in rows)
         assert message.render(0) == []
 
@@ -157,7 +157,7 @@ def test_assistant_uses_the_tool_bullet_in_gray_without_coloring_body_or_slicing
     assert rows[0].count("\x1b[90m") == 1
     for width in range(16):
         lines = turn.normal_message.render(width)
-        assert all(visible_width(row) <= width for row in lines)
+        assert all(string_width(row) <= width for row in lines)
         if width >= 4:
             assert sum(gray("•") in row for row in lines) == 1
         else:
@@ -175,7 +175,7 @@ def test_user_background_covers_gutter_padding_and_inline_resets_without_leaking
     rows = user.render(32)
     assert len(rows) == 3
     assert all(row.startswith(background) and row.endswith("\x1b[49m") for row in rows)
-    assert all(visible_width(row) == 32 for row in rows)
+    assert all(string_width(row) == 32 for row in rows)
     assert strip_ansi(rows[0]) == strip_ansi(rows[-1]) == " " * 32
     assert rows[1].startswith(background + " › ")
     assert "\x1b[0m" + background in rows[1]
@@ -204,7 +204,7 @@ def test_user_background_identity_style_and_small_unicode_widths():
         user = UserMessage("中文 **hello**", MarkdownTheme(), DefaultTextStyle(bg_color=bg))
         for width in range(1, 18):
             rows = user.render(width)
-            assert all(visible_width(row) == width for row in rows)
+            assert all(string_width(row) == width for row in rows)
             assert not strip_ansi(rows[0]).strip()
             assert not strip_ansi(rows[-1]).strip()
         assert user.render(0) == []
@@ -381,7 +381,7 @@ def test_thinking_wraps_unicode_and_ansi_safely_at_tiny_widths():
         message.set_expanded(expanded)
         for width in range(65):
             rows = message.render(width)
-            assert all(visible_width(row) <= width for row in rows)
+            assert all(string_width(row) <= width for row in rows)
             assert all("\n" not in row and "\r" not in row for row in rows)
             assert all("\x1b" not in strip_ansi(row) for row in rows)
             if width >= 4:

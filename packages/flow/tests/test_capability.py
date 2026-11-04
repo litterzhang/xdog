@@ -211,7 +211,7 @@ async def test_cancel_kills_workflow_descendant_that_ignores_term(monkeypatch, t
                 while True:
                     try:
                         state = Path(f'/proc/{pid}/stat').read_text().split()[2]
-                    except FileNotFoundError:
+                    except (FileNotFoundError, ProcessLookupError):
                         return
                     if state == 'Z':  # Dead orphan awaiting the OS reaper, not an executing process.
                         return

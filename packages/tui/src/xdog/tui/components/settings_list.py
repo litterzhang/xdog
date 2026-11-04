@@ -12,7 +12,7 @@ from typing import Callable
 from xdog.tui.fuzzy import fuzzy_filter
 from xdog.tui.keys import KeyEvent
 from xdog.tui.tui import Component
-from xdog.tui.utils import truncate_to_width, visible_width, wrap_text_with_ansi
+from xdog.tui.utils import string_width, truncate_to_width, wrap_text_with_ansi
 
 
 @dataclass
@@ -117,22 +117,22 @@ class SettingsList(Component):
         end = min(start + self._max_visible, len(display_items))
 
         # Max label width for alignment
-        max_label_w = min(30, max((visible_width(item.label) for item in self._items), default=0))
+        max_label_w = min(30, max((string_width(item.label) for item in self._items), default=0))
 
         for i in range(start, end):
             item = display_items[i]
             is_selected = i == self._selected_index
 
             prefix = self._theme.cursor if is_selected else "  "
-            prefix_w = visible_width(prefix)
+            prefix_w = string_width(prefix)
 
             # Pad label for alignment
-            pad = max(0, max_label_w - visible_width(item.label))
+            pad = max(0, max_label_w - string_width(item.label))
             label_padded = item.label + " " * pad
             label_text = self._theme.label(label_padded, is_selected)
 
             separator = "  "
-            used_w = prefix_w + max_label_w + visible_width(separator)
+            used_w = prefix_w + max_label_w + string_width(separator)
             value_max_w = width - used_w - 2
 
             value_text = self._theme.value(truncate_to_width(item.current_value, value_max_w, ""), is_selected)

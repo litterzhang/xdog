@@ -63,7 +63,7 @@ _SCRIPT = textwrap.dedent('''
                 skills=SkillRepo().register(directory=root / 'skills', name="shared")),
                 session_data=data, session_manager=manager,
                 settings=SettingsManager(global_path=root / 'settings.json'),
-                tool_repo=None, bash=None, working_dir=root, permissions=PermissionManager('allow-all'))
+                tool_repo=None, working_dir=root, permissions=PermissionManager('allow-all'))
             sid = session.session_id
             async def close():
                 await session.aclose()

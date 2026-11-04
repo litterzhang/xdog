@@ -68,19 +68,12 @@ class McpDataReceiver:
         self._receiver.close()
 
 
-def spool_mcp_data(value: tuple[McpEntry, ...] | McpDocument | McpCompletion, *,
-                   content_types: bool = True) -> tuple[BinaryIO, int, str]:
+def spool_mcp_data(value: tuple[McpEntry, ...] | McpDocument | McpCompletion) -> tuple[BinaryIO, int, str]:
     file = tempfile.TemporaryFile()
     try:
         payload: dict[str, Any] = ({"kind": "catalog", "entries": [asdict(entry) for entry in value]}
                    if isinstance(value, tuple) else {"kind": "completion", "completion": asdict(value)}
                    if isinstance(value, McpCompletion) else {"kind": "document", "document": asdict(value)})
-        if isinstance(value, McpDocument) and not content_types:
-            if any(block.is_binary and not block.data for block in value.blocks):
-                raise ValueError("Empty binary MCP content requires an updated typed-content viewer; "
-                                 "no draft downgrade")
-            for block in payload["document"]["blocks"]:
-                block.pop("content_type", None)  # Existing nonempty binary/text viewers remain wire-compatible.
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         file.write(data)
         file.seek(0)

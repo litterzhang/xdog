@@ -257,7 +257,9 @@ async def test_register_ack_loss_does_not_cancel_accepted_owner_registration(dae
     value = await client()
     data = definition(tmp_path, observer_data)
     _, writer = await asyncio.open_unix_connection(current().location.socket)
-    writer.write(encode_frame({'version': 1, 'generation': current().location.generation,
+    from xdog.eyes.local_control import CONTROL_VERSION
+
+    writer.write(encode_frame({'version': CONTROL_VERSION, 'generation': current().location.generation,
         'action': 'register', 'body': {'owner': value.owner,
             'key': 'tasks', 'definition': data, 'delivery': 'events', 'recover': True}}))
     await writer.drain()

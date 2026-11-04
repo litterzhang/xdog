@@ -433,3 +433,32 @@ Copilot's normalized adapters use `usage_with_cost(model, usage)` to populate
 `Usage.cost`. Other paths may retain default/unknown pricing; a zero total is not
 proof of free access or a billing guarantee. Native responses preserve upstream
 usage rather than reconstructing the normalized cost object.
+
+## Capability and failure facts
+
+Model tool, parallel-tool, streaming and structured-output flags are tri-state:
+`True` is declared support, `False` is explicit non-support, and `None` means
+unreported. Image input/output and native search remain independent capabilities.
+`validate_model_request(model, context, options)` is a pure preflight check;
+explicit contradictions raise `ModelCapabilityError` before authentication/IO.
+Unknown support is not silently converted to either a denial or a guarantee.
+Adapter transport support is separate: an event API can wrap a non-streaming
+response where that provider already implements it.
+
+Normalized terminal errors expose `ModelFailure` on `ErrorEvent.failure` and its
+final `AssistantMessage.failure`. Unclassified terminal events carry an explicit
+`unknown` failure, not a second legacy representation. Existing raised exceptions stay
+raised; `model_failure(exception)` extracts the same safe facts without retaining
+URLs, headers or response bodies. Kinds distinguish authentication, permission,
+rate limit, model, context, unsupported/request, transport/upstream, protocol,
+parse, cancellation and unknown failures. Only explicit machine codes/status/type
+are classified, never keyword guesses from prose. `partial` means response content was observed, not tool effects.
+There is no automatic retry, credential fallback or model/provider switch.
+
+Stream iteration errors also settle the final-result waiter with that error;
+explicitly closing an incomplete stream settles its result as cancelled, not as a
+fabricated successful response. Closing a stream does not close borrowed clients.
+
+Native generation support requires `supported_generation_protocols`. Old cached
+`supported_protocols` or an adapter's `api` label are not substituted for missing
+endpoint declarations; explicitly refresh model metadata when needed.

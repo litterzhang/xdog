@@ -109,21 +109,20 @@ Compaction 保留一份普通 group 摘要及近期完整消息，原文检查�
 
 ## 小红书
 
-独立 HTTP 后端由管理员安装/启动；Claw 不代为登录或绕过验证码。当前适配器使用 proposal
-核实的固定上游协议，只接受 loopback HTTP，从配置的环境变量读取可选认证令牌。
+使用 Claw 内的 Python SDK 适配和可选依赖 `xdog-claw[xhs]`，不部署独立 HTTP 后端。
+只有显式登录命令启动一次性 SDK 扫码；gateway 不代为登录或绕过验证码。
+上游固定为 `xiaohongshu-cli[browser]==0.6.4+xdog.1`（当前本地改造版），凭据按 group 隔离。详见 [SDK 边界](claw-xhs-sdk.md)。
 
 ```yaml
 xhs_enabled: false
 xhs_group_id: main
-xhs_base_url: http://127.0.0.1:18060
-xhs_token_env: XHS_API_TOKEN
 xhs_poll_seconds: 60
 xhs_replies_enabled: false
 xhs_publish_enabled: false
 ```
 
 ```bash
-uv run xdog-claw channel login --xhs --group main --base-url http://127.0.0.1:18060
+uv run --package xdog-claw --extra xhs xdog-claw channel login --xhs --group main
 ```
 
 登录账号 ID/昵称/revision 独立于发言者与 group 人格保存；重新登录使旧账号绑定失效。
@@ -138,10 +137,10 @@ uv run xdog-claw channel login --xhs --group main --base-url http://127.0.0.1:18
 `xhs_post({})` 为 opt-in 工具；纳入宿主 enabled_tools 后再由身份 profile 授予。
 
 - 仅显式调用时读取当前评论的原帖，固定原 group/account/revision/comment/feed。
-- 不接受模型传入目标或 token；重新核实准确通知及账号，从宿主内取得 feed token。
+- 不接受模型传入目标或 token；使用原输入冻结的 feed_id，并核实原账号及绑定。
 - 仅返回有界标题、正文、feed_id、untrusted 标记，不返回后端 token、原始响应或评论列表。
-- 目标缺失/歧义、缺 token、账号切换、详情帖子不匹配均返回不可用，不猜目标。
-- IO 在原应用 loop 上结算，返回前复验原输入权限；旧 reader 在原输入结束后失效。
+- 目标缺失、账号切换、详情帖子不匹配均返回不可用，不从通知窗口猜目标。
+- SDK 阻塞 IO 在 owned worker 执行，回到原应用 loop 结算并复验输入权限；旧 reader 在原输入结束后失效。
 - 不支持任意帖子、图片/视频或全量评论，不发帖、不回复，不另建缓存或后台任务。
 - 返回结果进入普通 group 历史；不是只有当前主体能看见的隔离结果。
 

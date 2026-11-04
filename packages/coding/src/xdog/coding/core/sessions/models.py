@@ -20,8 +20,8 @@ class InputRecord:
     status: str
     error: str = ""
     batch_id: str = ""
-    # None identifies legacy records; zero explicitly means not started.
-    start_order: int | None = 0
+    # Zero means admitted but not started.
+    start_order: int = 0
     started_at: float | None = None
     settled_at: float | None = None
 

@@ -43,7 +43,7 @@ def test_coding_sends_and_persists_real_typed_images_not_path_placeholders(tmp_p
     manager = SessionManager(tmp_path / "sessions")
     session = AgentSession(agent=agent, session_data=manager.create_session(model="test/vision", working_dir=tmp_path),
                            session_manager=manager, settings=SettingsManager(global_path=tmp_path / "none"),
-                           tool_repo=None, bash=None, working_dir=tmp_path,
+                           tool_repo=None, working_dir=tmp_path,
                            model_info=Model(id="test/vision", input=("text", "image")))
     session._maybe_compact = AsyncMock()
     ui = InteractiveMode(session)
@@ -224,7 +224,7 @@ def test_cli_initial_image_is_typed_and_print_mode_rejects_unknown_capability(tm
     manager = SessionManager(tmp_path / "sessions")
     session = AgentSession(agent=agent, session_data=manager.create_session(model="test/text", working_dir=tmp_path),
                            session_manager=manager, settings=SettingsManager(global_path=tmp_path / "none"),
-                           tool_repo=None, bash=None, working_dir=tmp_path)
+                           tool_repo=None, working_dir=tmp_path)
     assert asyncio.run(run_print_mode(session, "", images=tuple(images))) == 1
     assert "image" in capsys.readouterr().err.lower()
 

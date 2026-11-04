@@ -29,6 +29,17 @@ class Summarizer:
         self._stream_fn = stream_fn
         self._options = options
 
+    async def summarize_handoff(self, source: str, *, max_chars: int) -> str:
+        """Rotation has its own compact contract, not the compaction report template."""
+        from xdog.claw.core.persistence.handoff import INSTRUCTIONS
+
+        context = Context(system_prompt=SUMMARIZER_SYSTEM_PROMPT + '\n' + INSTRUCTIONS
+                          + f'\nUse at most {max_chars} characters. Shorter is better.',
+                          messages=(UserMessage(content=source),), tools=())
+        if self._stream_fn is None:
+            raise ValueError('Handoff requires the original owner model adapter')
+        return await stream_summary(self._stream_fn, self._model, context, self._options)
+
     async def summarize(
         self,
         messages: list[AgentMessage],

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from xdog.eyes.local_control import (
+    CONTROL_VERSION,
     MAX_FRAME,
     ControlError,
     JsonValue,
@@ -26,15 +27,15 @@ async def request(location: RuntimeLocation, action: str, body: dict[str, JsonVa
         async with asyncio.timeout(timeout):
             reader, writer = await asyncio.open_unix_connection(location.socket, limit=MAX_FRAME)
             writer.write(encode_frame(
-                {'version': 1, 'generation': location.generation, 'action': action, 'body': body}))
+                {'version': CONTROL_VERSION, 'generation': location.generation, 'action': action, 'body': body}))
             await writer.drain()
             frame = await reader.readline()
             if not frame:
                 raise ConnectionError('Eyes daemon closed the control connection before replying')
             response = decode_frame(frame)
-            if (set(response) != {'version', 'generation', 'cwd', 'status', 'body'}
-                    or type(response['version']) is not int or response['version'] != 1
-                    or response['cwd'] != str(location.cwd)
+            if (set(response) != {'version', 'generation', 'directory', 'status', 'body'}
+                    or type(response['version']) is not int or response['version'] != CONTROL_VERSION
+                    or response['directory'] != str(location.directory)
                     or not isinstance(response['generation'], str)
                     or not isinstance(response['status'], str)
                     or response['status'] not in {'ok', 'accepted', 'duplicate', 'rejected', 'stale-generation'}

@@ -559,7 +559,9 @@ def main() -> None:
         help=(
             "Shared tool context passed to every tool's execute(ctx=...). "
             "A JSON object, or '@path' to read the JSON from a file. "
-            "Example: --tool-ctx '{\"result_schema\": {\"summary\": \"string\"}, \"result_sink\": {}}'"
+            "Example: --tool-ctx '{\"result_schema\": {\"type\": \"object\", "
+            "\"properties\": {\"summary\": {\"type\": \"string\"}}, \"required\": [\"summary\"]}, "
+            "\"result_sink\": {}}'"
         ),
     )
 

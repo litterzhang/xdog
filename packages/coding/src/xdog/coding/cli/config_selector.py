@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from xdog.coding.config import GlobalConfig, get_global_settings_path
+from xdog.coding.config import GlobalConfig, get_settings_path
 
 
 def _prompt_provider() -> str:
@@ -77,7 +77,7 @@ def config_selector(config_path: Path | None = None) -> GlobalConfig:
     if new_instructions:
         cfg = cfg.model_copy(update={"custom_instructions": new_instructions})
 
-    save_path = config_path or get_global_settings_path()
+    save_path = config_path or get_settings_path()
     cfg.save(save_path)
     print(f"\nConfiguration saved to {save_path}")
     return cfg

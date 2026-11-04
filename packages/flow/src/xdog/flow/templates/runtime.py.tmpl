@@ -508,24 +508,26 @@ def _load_checkpoint() -> None:
         return
     with p.open(encoding="utf-8") as _fh:
         _snap: dict[str, object] = json.load(_fh)
-    expected = {"outputs", "completed", "loop_counters", "stack", "out_live", "memo", "tokens_used"}
-    # `sessions` is optional so a checkpoint written before `inherit` existed
-    # still resumes, carrying no sessions — the same state a run has before any
-    # agent node has spoken.
-    if set(_snap) - {"sessions"} != expected:
+    expected = {"contract", "outputs", "completed", "loop_counters", "stack", "out_live", "memo", "tokens_used"}
+    if set(_snap) != expected | {"sessions"}:
         raise WorkflowExecutionError("checkpoint does not match the current schema")
+    try:
+        validate_checkpoint_contract(_snap, _CHECKPOINT_CONTRACT)
+    except ValueError as exc:
+        raise WorkflowExecutionError(str(exc)) from None
     _out, _done = _snap["outputs"], _snap["completed"]
     _lc, _stk = _snap["loop_counters"], _snap["stack"]
     _outp, _mem, _tok = _snap["out_live"], _snap["memo"], _snap["tokens_used"]
-    _sess = _snap.get("sessions") or {}
-    if isinstance(_sess, dict):
-        _SESSIONS.update({str(k): dict(v) for k, v in _sess.items() if isinstance(v, dict)})
+    _sess = _snap["sessions"]
+    if not isinstance(_sess, dict):
+        raise WorkflowExecutionError("checkpoint sessions must be a mapping")
     if not isinstance(_out, dict) or not isinstance(_done, list):
         raise WorkflowExecutionError("checkpoint outputs/completed have invalid types")
     if not isinstance(_lc, dict) or not isinstance(_stk, list):
         raise WorkflowExecutionError("checkpoint loop_counters/stack have invalid types")
     if not isinstance(_outp, dict) or not isinstance(_mem, dict) or not isinstance(_tok, int):
         raise WorkflowExecutionError("checkpoint out_live/memo/tokens_used have invalid types")
+    _SESSIONS.update({str(k): dict(v) for k, v in _sess.items() if isinstance(v, dict)})
     _CHECKPOINT_LOADED = True
     _OUT.clear()
     _OUT.update(_out)  # type: ignore[arg-type]
@@ -544,6 +546,7 @@ def _load_checkpoint() -> None:
 
 def _checkpoint_snapshot() -> dict[str, object]:
     return {
+        "contract": _CHECKPOINT_CONTRACT,
         "outputs": _OUT,
         "sessions": _SESSIONS,
         "completed": list(_COMPLETED),

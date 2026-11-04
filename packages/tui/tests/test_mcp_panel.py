@@ -4,7 +4,7 @@ import time
 
 from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.keys import KeyEvent
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 
 def test_management_catalog_preview_and_draft_action_require_explicit_gestures():
@@ -29,7 +29,7 @@ def test_management_catalog_preview_and_draft_action_require_explicit_gestures()
         for height in (0, 1, 2, 6, 12):
             panel.set_render_budget(height)
             rows = panel.render(32)
-            assert len(rows) <= height and all(visible_width(row) <= 32 for row in rows)
+            assert len(rows) <= height and all(string_width(row) <= 32 for row in rows)
         panel.handle_input(KeyEvent("i"))
         assert inserted == [True]
         panel.handle_input(KeyEvent("e"))
@@ -98,7 +98,7 @@ def test_retired_watch_controls_are_absent_and_manual_catalog_refresh_is_explici
             panel.set_render_budget(height)
             for width in (1, 16, 32):
                 rows = panel.render(width)
-                assert len(rows) <= height and all(visible_width(row) <= width for row in rows)
+                assert len(rows) <= height and all(string_width(row) <= width for row in rows)
     finally:
         panel.close()
 

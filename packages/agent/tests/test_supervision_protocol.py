@@ -7,7 +7,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 from xdog.agent.child_config import ChildConfig, ChildPresets, parse_child_start
-from xdog.agent.children import ChildSpec, child_message_status, child_prompt, child_task
+from xdog.agent.children import ChildSpec, child_message_status, child_prompt
 from xdog.ai.types import AssistantMessage, SystemPromptBlock, TextContent, ToolCall
 
 
@@ -28,10 +28,10 @@ def test_config_defaults_and_new_fields_are_immutable_and_json_roundtrippable():
     assert ChildConfig.from_dict({"skills": None}).skills is None
     with pytest.raises(FrozenInstanceError):
         config.system_prompt = "changed"
-    # Old positional argument slots are unchanged; new fields are append-only.
-    spec = ChildSpec("0123456789ab", "task", "read-only", False, "label", "legacy", (), None, None, None, ())
-    assert spec.instructions == "legacy" and spec.system_prompt == "" and spec.tool_actions == ()
-    assert spec.config().to_dict()["skills"] == []
+    spec = ChildSpec(id='0123456789ab', task='task', label='label', tools=())
+    assert spec.system_prompt == '' and spec.tool_actions == ()
+    assert spec.config().to_dict()['skills'] == []
+
 
 
 @pytest.mark.parametrize(
@@ -76,23 +76,23 @@ def test_presets_and_flags_keep_independent_prompt_skills_and_actions():
     assert selected.system_prompt == "Independent role" and selected.skills == ()
 
 
-@pytest.mark.parametrize("parent", ["PARENT SECRET", (SystemPromptBlock(text="PARENT SECRET"),), None])
-def test_child_prompt_ignores_every_parent_prompt_form_and_legacy_instructions(parent):
-    spec = ChildSpec(
-        id="0123456789ab", task="TASK KNOWLEDGE", system_prompt="CHILD ROLE", instructions="LEGACY ONLY", label="Review"
-    )
-    prompt = child_prompt(parent, spec)
-    assert isinstance(prompt, str) and prompt.startswith("CHILD ROLE")
-    assert "PARENT SECRET" not in prompt and "TASK KNOWLEDGE" not in prompt and "LEGACY ONLY" not in prompt
-    assert "grant no additional permissions" in prompt
+@pytest.mark.parametrize('parent', ['PARENT SECRET', (SystemPromptBlock(text='PARENT SECRET'),), None])
+def test_child_prompt_has_no_ignored_parent_argument(parent):
+    spec = ChildSpec(id='0123456789ab', task='TASK KNOWLEDGE', system_prompt='CHILD ROLE', label='Review')
+    prompt = child_prompt(spec)
+    assert prompt.startswith('CHILD ROLE') and 'TASK KNOWLEDGE' not in prompt
+    assert 'grant no additional permissions' in prompt
+    with pytest.raises(TypeError):
+        child_prompt(parent, spec)
 
 
-def test_legacy_instructions_are_user_task_material_and_rendering_never_changes_spec():
-    spec = ChildSpec("0123456789ab", "EXPLICIT TASK", instructions="LEGACY KNOWLEDGE", system_prompt="CHILD SYSTEM")
-    assert child_task(spec) == "Task materials:\nLEGACY KNOWLEDGE\n\nTask:\nEXPLICIT TASK"
-    assert child_task(ChildSpec("0123456789ab", "EXPLICIT TASK")) == "EXPLICIT TASK"
-    assert "LEGACY KNOWLEDGE" not in child_prompt("PARENT SECRET", spec)
-    assert spec.task == "EXPLICIT TASK" and spec.instructions == "LEGACY KNOWLEDGE"
+
+def test_retired_child_instructions_are_not_accepted_or_promoted():
+    with pytest.raises(ValueError):
+        ChildConfig.from_dict({'instructions': 'OLD MATERIAL'})
+    with pytest.raises(TypeError):
+        ChildSpec('0123456789ab', 'TASK', instructions='OLD MATERIAL')
+
 
 
 @pytest.mark.parametrize("stop,status", [("stop", "received"), ("error", "error"), ("aborted", "aborted")])

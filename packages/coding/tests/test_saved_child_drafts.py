@@ -33,7 +33,7 @@ def make(tmp_path, kind, monkeypatch):
         session = AgentSession(agent=Agent(stream, config=AgentConfig(model='offline/model')),
             session_data=store.create_session(model='offline/model', working_dir=tmp_path), session_manager=store,
             settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-            tool_repo=None, bash=None, permissions=PermissionManager('deny'))
+            tool_repo=None, permissions=PermissionManager('deny'))
         ui = InteractiveMode(session)
     else:
         tmp_path.chmod(0o700)
@@ -463,7 +463,7 @@ async def test_parent_autosave_and_reviewed_recovery_never_send_or_overwrite_com
         ui._parent_draft_command('autosave off')
         ui._editor.set_text('')
         ui._composer.take()
-        ui._parent_draft_command('saved ' + saved.id)
+        ui._parent_draft_command('restore ' + saved.id)
         await wait(ui, lambda: not ui._parent_drafts.io.busy)
         browser = ui._parent_draft_panel
         assert browser.parent and browser.mode == 'restore' and ui._child_panel is None
@@ -504,7 +504,7 @@ async def test_parent_recovery_has_no_delete_catalog_or_management_controls(tmp_
                                    scope='old-parent', action='parent', slot=''))
     try:
         ui._editor.set_text('CURRENT PARENT MUST SURVIVE')
-        ui._parent_draft_command('saved ' + saved.id)
+        ui._parent_draft_command('restore ' + saved.id)
         await wait(ui, lambda: not ui._parent_drafts.io.busy)
         browser = ui._parent_draft_panel
         entry = browser.source()[0]
@@ -539,7 +539,7 @@ async def test_closed_parent_read_cannot_reopen_or_adopt_into_replacement_view(t
         return original(self, key)
     monkeypatch.setattr(ChildDraftStore, 'load', held)
     try:
-        ui._parent_draft_command('saved ' + saved.id)
+        ui._parent_draft_command('restore ' + saved.id)
         assert await asyncio.to_thread(entered.wait, 3)
         prior = ui._parent_draft_panel
         ui._close_parent_drafts()
@@ -567,7 +567,7 @@ async def test_parent_recovery_back_releases_catalog_and_read_snapshot_without_d
     saved = store.save(encode_draft(ChildDraft('PARENT TRANSIENT', images=(image,)), label='source',
                                    scope='old', action='parent', slot=''))
     try:
-        ui._parent_draft_command('saved ' + saved.id)
+        ui._parent_draft_command('restore ' + saved.id)
         await wait(ui, lambda: not ui._parent_drafts.io.busy)
         browser = ui._parent_draft_panel
         assert browser.parent and ui._parent_saved_bytes() == len(image.data)
@@ -598,7 +598,7 @@ async def test_parent_read_cannot_take_focus_after_native_view_or_focus_change(
         return original(self, key)
     monkeypatch.setattr(ChildDraftStore, 'load', held)
     try:
-        ui._parent_draft_command('saved ' + saved.id)
+        ui._parent_draft_command('restore ' + saved.id)
         assert await asyncio.to_thread(entered.wait, 3)
         prior = ui._parent_draft_panel
         if transition == 'child-editor':
@@ -637,7 +637,7 @@ async def test_old_parent_callback_cannot_restore_or_delete_after_native_view_ch
     saved = store.save(encode_draft(ChildDraft('DO NOT ADOPT OLD REVIEW'), label='source',
                                    scope='old', action='parent', slot=''))
     try:
-        ui._parent_draft_command('saved ' + saved.id)
+        ui._parent_draft_command('restore ' + saved.id)
         await wait(ui, lambda: not ui._parent_drafts.io.busy)
         browser = ui._parent_draft_panel
         entry = browser.source()[0]
@@ -803,7 +803,7 @@ async def test_parent_recovery_read_and_stale_actions_respect_modal_input_owner(
     saved = store.save(encode_draft(ChildDraft('KEEP SAVED WHILE MODAL'), label='source',
                                    scope='old', action='parent', slot=''))
     try:
-        ui._parent_draft_command('saved ' + saved.id)
+        ui._parent_draft_command('restore ' + saved.id)
         await wait(ui, lambda: not ui._parent_drafts.io.busy)
         browser = ui._parent_draft_panel
         entry = browser.source()[0]
@@ -817,7 +817,7 @@ async def test_parent_recovery_read_and_stale_actions_respect_modal_input_owner(
         for action in ('copy', 'discard'):
             with pytest.raises(ValueError, match='view changed'):
                 browser.act(action, entry)
-        ui._parent_draft_command('saved ' + saved.id)
+        ui._parent_draft_command('restore ' + saved.id)
         assert not ui._parent_drafts.io.busy and ui._parent_draft_panel is browser and ui._child_panel is None
         assert not ui._editor.get_text() and not ui._composer.items and not calls
         assert store.load(saved.id).sha256 == saved.sha256
@@ -845,7 +845,7 @@ async def test_parent_read_finishing_under_new_modal_does_not_take_focus(tmp_pat
         return original(self, key)
     monkeypatch.setattr(ChildDraftStore, 'load', held)
     try:
-        ui._parent_draft_command('saved ' + saved.id)
+        ui._parent_draft_command('restore ' + saved.id)
         assert await asyncio.to_thread(entered.wait, 3)
         dialog = ExtensionDialog('owned', {'id': 'question', 'kind': 'input', 'title': 'Owned'}, lambda _: None)
         ui._extension_dialog_panel = dialog
@@ -981,7 +981,7 @@ async def test_native_parent_status_shows_pending_writing_and_latest_polled_comm
 
 
 @pytest.mark.parametrize('kind', ['coding', 'claw'])
-@pytest.mark.parametrize('command', ['restore', 'saved', 'saved list'])
+@pytest.mark.parametrize('command', ['restore'])
 async def test_primary_bounded_selector_independent_of_child_browser_and_stored_scope(
     tmp_path, kind, command, monkeypatch,
 ):

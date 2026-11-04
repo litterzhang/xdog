@@ -6,7 +6,7 @@ Ported from TypeScript truncated-text.ts.
 from __future__ import annotations
 
 from xdog.tui.tui import Component
-from xdog.tui.utils import truncate_to_width, visible_width
+from xdog.tui.utils import string_width, truncate_to_width
 
 
 class TruncatedText(Component):
@@ -35,14 +35,10 @@ class TruncatedText(Component):
         display = truncate_to_width(single_line, available)
         left = " " * self._padding_x
         line = left + display
-        vis = visible_width(line)
+        vis = string_width(line)
         result.append(line + " " * max(0, width - vis))
 
         for _ in range(self._padding_y):
             result.append(empty_line)
 
         return result
-
-
-# Backward compatibility
-TruncatedTextComponent = TruncatedText

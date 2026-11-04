@@ -73,10 +73,6 @@ class Input(Component):
     def get_value(self) -> str:
         return self._value
 
-    def getValue(self) -> str:
-        """Alias for get_value (TypeScript compat)."""
-        return self._value
-
     def set_value(self, value: str) -> None:
         self._value = value
         self._cursor = min(self._cursor, len(value))
@@ -291,7 +287,3 @@ class Input(Component):
 
         self._last_was_kill = False
         return False
-
-
-# Backward compatibility
-InputComponent = Input

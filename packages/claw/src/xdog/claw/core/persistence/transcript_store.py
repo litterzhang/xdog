@@ -60,7 +60,9 @@ class TranscriptStore:
             except (ValueError, OSError, UnicodeError):
                 self._extension_entries[path.name] = {"invalid_saved_entries": None}
         self._access: dict[str, Any] = {}
-        for path in [*self._sessions_dir.glob("*.plan.json"), *self._sessions_dir.glob("*.access.json")]:
+        if any(self._sessions_dir.glob('*.plan.json')):
+            raise ValueError('Retired planning sidecars are unsupported; no permission migration')
+        for path in self._sessions_dir.glob("*.access.json"):
             try:
                 if path.is_symlink() or not path.is_file() or path.stat().st_size > 512 * 1024:
                     raise ValueError("Invalid access sidecar")
@@ -69,7 +71,7 @@ class TranscriptStore:
                     raise ValueError("Invalid access sidecar object")
                 self._access[path.name] = value
             except (ValueError, OSError, UnicodeError):
-                self._access[path.name] = {"invalid_saved_plan": True}
+                self._access[path.name] = {"invalid_saved_access": True}
 
     def _require_navigation_ready(self) -> None:
         if self._navigation_recovery_required:
@@ -155,10 +157,6 @@ class TranscriptStore:
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
-
-    # Preserve public compatibility names; selections may now be native or extension aliases.
-    get_extension_model = get_model
-    save_extension_model = save_model
 
     def get_reasoning(self, session_id: str, model: str) -> str | None:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
@@ -284,30 +282,18 @@ class TranscriptStore:
             raise ValueError("Transcript files must not be symbolic links")
         return path
 
+
     def _load_catalog(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"version": 1, "sessions": {}, "branches": {}, "active_branches": {}}
-        try:
-            loaded = json.loads(self._catalog_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict) and all(isinstance(loaded.get(key), dict)
-                                              for key in ("sessions", "branches", "active_branches")):
-                result.update(loaded)
-        except (OSError, ValueError, TypeError):
-            pass
-        for group_id, data in self._index.items():
-            if isinstance(data, dict) and isinstance(data.get("session_id"), str):
-                result["sessions"].setdefault(data["session_id"], {**data, "group_id": group_id})
-        # Older indexes lost archive metadata. Recover only from an explicitly
-        # group-owned directory; shared stores must not guess ownership.
-        if self._owner_group is not None:
-            for path in self._sessions_dir.glob("*.jsonl"):
-                if "_branch_" in path.stem or path.is_symlink():
-                    continue
-                created = datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc).isoformat()
-                result["sessions"].setdefault(path.stem, {
-                    "session_id": path.stem, "group_id": self._owner_group, "created_at": created,
-                    "last_active": created, "turn_count": 0, "label": "Recovered archive",
-                })
-        return result
+        if not self._catalog_file.exists():
+            if self._index or any(self._sessions_dir.glob('*.jsonl')):
+                raise ValueError('Session catalog missing; old indexes/archives are not migrated')
+            return {'version': 1, 'sessions': {}, 'branches': {}, 'active_branches': {}}
+        loaded = json.loads(self._catalog_file.read_text(encoding='utf-8'))
+        if (not isinstance(loaded, dict) or set(loaded) != {'version', 'sessions', 'branches', 'active_branches'}
+                or type(loaded['version']) is not int or loaded['version'] != 1
+                or any(not isinstance(loaded[key], dict) for key in ('sessions', 'branches', 'active_branches'))):
+            raise ValueError('Invalid or unsupported session catalog')
+        return loaded
 
     def _save_catalog(self) -> None:
         self._atomic(self._catalog_file, self._catalog)
@@ -605,9 +591,6 @@ class TranscriptStore:
         key = path.with_suffix(".access.json").name
         if key in self._access:
             return AccessState.from_dict(self._access[key]).to_dict()
-        legacy_key = path.with_suffix(".plan.json").name
-        if legacy_key in self._access:
-            return AccessState.legacy(self._access[legacy_key]).to_dict()
         record = (self._catalog["branches"].get(session_id, {}).get(branch_id, {}) if branch_id else
                   self._catalog["sessions"].get(session_id, {}))
         return AccessState.saved(record).to_dict()
@@ -639,7 +622,9 @@ class TranscriptStore:
             destination = self._path(session_id, branch_id)
             if not branch_id or destination.exists() or branch_id in self._catalog['branches'].get(session_id, {}):
                 raise ValueError('Compaction recovery checkpoint already exists; no overwrite')
-            access = (AccessState.saved(metadata).to_dict() if "access" in metadata or "plan" in metadata
+            if {'plan', 'legacy_plan'} & metadata.keys():
+                raise ValueError('Retired planning metadata is unsupported')
+            access = (AccessState.saved(metadata).to_dict() if "access" in metadata
                       else self.get_access(session_id))
             selected = (names(metadata['active_tools']) if 'active_tools' in metadata
                         else self.get_active_tools(session_id))
@@ -652,7 +637,6 @@ class TranscriptStore:
                 "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "message_count": len(transcript), "parent_branch": self.active_branch(session_id),
                 **{key: value for key, value in metadata.items() if key not in {"plan", "access"}},
-                **({"legacy_plan": metadata["plan"]} if "plan" in metadata else {}),
                 "access": access,
             }
             with transaction(self, {destination, tools_path, entries_path, access_path, self._catalog_file}):
@@ -683,7 +667,3 @@ class TranscriptStore:
             for branch in branches:
                 self._path(session_id, branch)  # Validate catalog identities as well as discovered files.
             return sorted(branches)
-
-
-# Backward compatibility alias
-SessionManager = TranscriptStore

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 from xdog.claw.channels.tui.tui_app import ChatApp, theme_header
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 @pytest.mark.parametrize('plain', [False, True])
@@ -30,7 +30,7 @@ def test_history_and_transcript_follow_the_claw_main_ui(monkeypatch, plain):
         assert panel is not None
         rows = panel.render(80)
         assert ('\x1b[' in ''.join(rows)) == (not plain)
-        assert all(visible_width(row) <= 80 for row in rows)
+        assert all(string_width(row) <= 80 for row in rows)
         if not plain:
             assert rows[0] == theme_header(strip_ansi(rows[0]))
     finally:

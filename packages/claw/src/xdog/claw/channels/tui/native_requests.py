@@ -96,8 +96,7 @@ class NativeRequests:
                 "session_navigation_cancel": 1, "attachment_transport": 1,
                 "transcript_source": 1, "mcp_controls": 1, "mcp_browser_owner": 1,
                 "mcp_context": 1, "mcp_completion": 1,
-                "mcp_content_types": 1,
-                "tool_inventory": 1, "tool_inventory_selection": 1,
+                "tool_inventory": 1,
                 "mcp_resource_completion": 1,
                 "extension_command_results": 1,
                 "extension_session": 1,
@@ -339,6 +338,7 @@ class NativeRequests:
                     "content": result.response_text or "(no response)",
                     "run_id": run_id,
                 }
+            resp['current_session_id'] = orchestrator.get_new_session_id(group_id) or ''
             resp['message_metadata'] = message_metadata
             if result.usage:
                 resp["usage"] = result.usage

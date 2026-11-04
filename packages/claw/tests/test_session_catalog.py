@@ -23,16 +23,15 @@ def test_catalog_retains_archives_scopes_ownership_and_survives_reload(tmp_path)
     assert reloaded.load_transcript(first.session_id)[0]["content"] == "first"
 
 
-def test_owned_legacy_archives_recover_but_shared_store_does_not_guess(tmp_path):
-    (tmp_path / "legacy-id.jsonl").write_text('{"role":"user","content":"legacy"}\n')
-    shared = TranscriptStore(tmp_path)
-    assert shared.list_sessions("main") == []
-    owned = TranscriptStore(tmp_path, owner_group="main")
-    assert owned.list_sessions("main")[0]["session_id"] == "legacy-id"
-    assert owned.load_transcript("legacy-id")[0]['content'] == 'legacy'
-    assert owned.get_active_session('main') is None
-    with pytest.raises(ValueError):
-        owned.load_transcript("../../other")
+@pytest.mark.parametrize('owned', [False, True])
+def test_old_archive_without_catalog_is_not_reconstructed(tmp_path, owned):
+    path = tmp_path / 'old-id.jsonl'
+    path.write_text('{"role":"user","content":"original"}\n')
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match='catalog missing'):
+        TranscriptStore(tmp_path, owner_group='main' if owned else None)
+    assert path.read_bytes() == before
+
 
 
 def test_new_context_resets_daily_clock_without_activating_old_history(tmp_path):
@@ -61,8 +60,7 @@ def test_group_historical_routes_are_read_only_and_never_change_active_context(t
     store._path(meta.session_id, 'legacy').write_text(
         ''.join(json.dumps(row) + '\n' for row in transcript))
     before = store.branch_metadata(meta.session_id)
-    with pytest.raises(ValueError, match="read-only"):
-        runtime.navigate_session(action, meta.session_id, "legacy", 1, meta.session_id)
+    assert not hasattr(runtime, "navigate_session")
     assert store.get_active_session("main").session_id == meta.session_id
     assert store.load_transcript(meta.session_id) == transcript
     assert store.branch_metadata(meta.session_id) == before
@@ -71,5 +69,4 @@ def test_group_historical_routes_are_read_only_and_never_change_active_context(t
     entries = runtime.navigation_entries(f"tree|{meta.session_id}|")
     assert any(row["kind"] == "checkpoint" for row in entries)
     assert all('Fork/navigate' not in row.get('detail', '') for row in entries)
-    with pytest.raises(ValueError, match="changed"):
-        runtime.navigate_session("new", "", "", -1, "wrong-active")
+    assert not hasattr(runtime, "navigate_session")

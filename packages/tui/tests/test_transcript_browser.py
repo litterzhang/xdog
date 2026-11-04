@@ -6,7 +6,7 @@ from dataclasses import replace
 from xdog.tui.components.transcript_panel import TranscriptPanel
 from xdog.tui.keys import KeyEvent
 from xdog.tui.transcript_browser import BrowserRequest, TranscriptBrowser, TranscriptRecord
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 def wait(browser):
@@ -35,7 +35,7 @@ def test_full_history_search_every_occurrence_unicode_horizontal_and_no_truncati
         assert "STRASSE" in next(row.text for row in view.rows if row.index == view.cursor)
         browser.request(replace(request, query="line-24999", match=0))
         assert wait(browser).cursor == 24999
-        assert all(visible_width(row.text) <= 20 for row in browser.snapshot().rows)
+        assert all(string_width(row.text) <= 20 for row in browser.snapshot().rows)
     finally:
         browser.close()
         browser._thread.join(3)
@@ -102,7 +102,7 @@ def test_panel_search_selection_paste_navigation_tiny_budgets_and_focus():
             wait(panel.browser)
             panel.poll()
             rows = panel.render(16)
-            assert len(rows) <= height and all(visible_width(row) <= 16 for row in rows)
+            assert len(rows) <= height and all(string_width(row) <= 16 for row in rows)
         panel.handle_paste("ignored paste outside search")
         panel.handle_input(KeyEvent("escape"))
         assert closed == [True]

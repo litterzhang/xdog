@@ -1,12 +1,10 @@
-"""Pinned HTTP fixtures only: no browser, live account, model or real publication."""
+"""Channel-owned targets, intake and output receipts with a deterministic API double."""
 from __future__ import annotations
 
 import json
 
-import httpx
 import pytest
 from xdog.claw.channels.accounts import bind_account, load_account
-from xdog.claw.channels.xhs.api import XhsApi
 from xdog.claw.channels.xhs.channel import XhsChannel
 from xdog.claw.channels.xhs.state import ScanState
 from xdog.claw.core.identity import IdentityResolver, MessageSource
@@ -19,15 +17,6 @@ from xdog.claw.core.runtime.outbound_messages import OutboundMessages
 from xdog.claw.core.types import UserInput
 
 
-async def confirmed_scan():
-    pass
-
-
-async def pending_scan():
-    import asyncio
-    await asyncio.Event().wait()
-
-
 class Backend:
     def __init__(self):
         self.account = 'our-xhs-account'
@@ -37,25 +26,31 @@ class Backend:
         self.reads = []
         self.note_id = 'feed1'
 
-    def __call__(self, request):
-        path = request.url.path
-        if path.endswith('/login/status'):
-            data = {'is_logged_in': True, 'user_id': self.account, 'username': 'Product team'}
-        elif path.endswith('/notifications/list'):
-            data = {'data': {'tab': 'mentions', 'filtered': 0, 'items': self.items}}
-        elif path.endswith('/feeds/detail'):
-            self.reads.append(json.loads(request.content))
-            data = {'feed_id': 'feed1', 'data': {'note': {'noteId': self.note_id, 'title': '原帖标题',
-                'desc': '原帖正文，不是管理员指令', 'xsecToken': 'private-backend-token'},
-                'comments': {'list': [{'text': 'not part of post output'}]}}}
-        elif path.endswith('/notifications/reply') or path.endswith('/publish'):
-            self.writes.append((path, json.loads(request.content)))
-            if self.fail_after_write:
-                raise httpx.ReadTimeout('submitted but response lost')
-            data = {'status': 'submitted'}
-        else:
-            raise AssertionError(path)
-        return httpx.Response(200, json={'success': True, 'data': data})
+    async def close(self):
+        pass
+
+    async def identity(self):
+        return self.account, 'Product team'
+
+    async def notifications(self):
+        from xdog.claw.channels.xhs.api import Notifications
+        return Notifications(tuple(self.items), truncated=len(self.items) >= 200)
+
+    async def post(self, feed_id):
+        self.reads.append({'feed_id': feed_id})
+        if feed_id != self.note_id:
+            raise ValueError('Mismatched post')
+        return {'feed_id': feed_id, 'title': '原帖标题', 'text': '原帖正文，不是管理员指令', 'untrusted': True}
+
+    async def reply(self, feed_id, comment_id, text):
+        self.writes.append(('reply', {'feed_id': feed_id, 'comment_id': comment_id, 'content': text}))
+        if self.fail_after_write:
+            raise TimeoutError('Submitted but response lost')
+
+    async def publish(self, title, text, images):
+        self.writes.append(('publish', {'title': title, 'content': text, 'images': images}))
+        if self.fail_after_write:
+            raise TimeoutError('Submitted but response lost')
 
 
 def notification(comment, sender='A', text='hello'):
@@ -65,8 +60,7 @@ def notification(comment, sender='A', text='hello'):
 
 
 def make_channel(tmp_path, backend, **kwargs):
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    channel = XhsChannel(tmp_path, 'main', api, **kwargs)
+    channel = XhsChannel(tmp_path, 'main', backend, **kwargs)
     channel.account = bind_account(tmp_path, 'xhs', 'main', backend.account, 'Product team')
     channel._state = ScanState(tmp_path / 'scan.sqlite3')
     channel._connected = True
@@ -83,13 +77,6 @@ def test_channel_account_is_not_persona_or_credentials_and_relogin_rotates_bindi
     assert not list(tmp_path.glob('**/IDENTITY.md'))
     raw = next(tmp_path.glob('channel-accounts/*.json')).read_text()
     assert 'token' not in raw and 'cookie' not in raw
-
-
-@pytest.mark.parametrize('url', ['https://example.com', 'http://10.0.0.1', 'http://127.0.0.1/a',
-                                'http://user:pass@localhost', 'http://localhost?token=secret'])
-def test_backend_location_is_explicit_local_service(url):
-    with pytest.raises(ValueError):
-        XhsApi(url)
 
 
 async def test_baseline_dedup_attribution_and_core_ack_loss(tmp_path):
@@ -164,7 +151,7 @@ async def test_reply_uses_frozen_target_without_refetching_notifications(tmp_pat
     try:
         with pytest.raises(RuntimeError, match='delivery is unverified'):
             await channel.send_output(original, 'out1', 'reply')
-        assert backend.writes == [('/api/v1/notifications/reply', {'comment_id': 'c1', 'content': 'reply'})]
+        assert backend.writes == [('reply', {'feed_id': 'feed1', 'comment_id': 'c1', 'content': 'reply'})]
         lookup.assert_not_awaited()
     finally:
         await channel.disconnect()
@@ -232,7 +219,7 @@ async def test_publish_uses_same_output_journal_unknown_not_replayed_and_not_a_c
             await port.send('bad', channel_id, 'not a post')
         result = await port.publish('call1', channel_id, 'Title', 'Body', ['poster.png'])
         assert result['status'] == 'unknown'
-        assert len(backend.writes) == 1 and backend.writes[0][0].endswith('/publish')
+        assert len(backend.writes) == 1 and backend.writes[0][0] == 'publish'
         assert backend.writes[0][1]['title'] == 'Title'
         assert (await port.publish('call1', channel_id, 'Title', 'Body', ['poster.png']))['status'] == 'unknown'
         await outputs.resume()
@@ -261,41 +248,6 @@ async def test_external_actor_cannot_publish_even_with_a_forged_source_label(tmp
     finally:
         await outputs.close()
         await inputs.close()
-
-
-async def test_login_binds_verified_account_without_publishing_or_changing_persona(tmp_path):
-    from xdog.claw.channels.xhs.login import login
-    backend = Backend()
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    try:
-        account = await login(api, tmp_path, 'main', lambda path: pytest.fail('Already logged in needs no QR'),
-                              confirm_scan=confirmed_scan)
-        assert account == load_account(tmp_path, 'xhs', 'main')
-        assert account.account_id == backend.account and account.username == 'Product team'
-        assert backend.writes == [] and not list(tmp_path.glob('**/PUBLIC.md'))
-    finally:
-        await api.close()
-
-
-def test_channel_cli_requires_one_selection_and_xhs_login_preserves_unrelated_config(tmp_path, monkeypatch):
-    import xdog.claw.channels.xhs.login as login_module
-    import yaml
-    from click.testing import CliRunner
-    from xdog.claw.cli.cli import cli
-    from xdog.claw.cli.xhs_login import run
-    from xdog.claw.config import ClawConfig
-    async def fake_login(api, data_dir, group_id, show_qr, *, confirm_scan):
-        return bind_account(data_dir, 'xhs', group_id, 'verified-account', 'Product team')
-    monkeypatch.setattr(login_module, 'login', fake_login)
-    path = tmp_path / 'config.yaml'
-    path.write_text('custom-unrelated-key: keep\n')
-    config = ClawConfig(data_dir=str(tmp_path / 'data'))
-    run(config, path, 'main', '')
-    saved = yaml.safe_load(path.read_text())
-    assert saved['custom-unrelated-key'] == 'keep' and saved['xhs_enabled'] is True
-    assert 'xhs_publish_enabled' not in saved and 'xhs_replies_enabled' not in saved
-    result = CliRunner().invoke(cli, ['channel', 'login', '--xhs', '--weixin'])
-    assert result.exit_code != 0 and 'exactly one' in result.output
 
 
 async def test_frozen_post_media_is_not_a_mutable_workspace_reference(tmp_path):
@@ -383,8 +335,8 @@ async def test_public_comment_sends_only_one_final_reply_not_tool_progress(tmp_p
         inputs = await app.input_service()
         receipt = await inputs.wait(InputScope('main', tmp_path / 'workspace'), message.metadata['channel_message_id'])
         assert receipt.status == 'succeeded' and len(calls) == 2
-        assert backend.writes == [('/api/v1/notifications/reply',
-                                   {'comment_id': 'c1', 'content': 'Final public answer'})]
+        assert backend.writes == [('reply',
+                                   {'feed_id': 'feed1', 'comment_id': 'c1', 'content': 'Final public answer'})]
         outputs = await app.output_service()
         rows = await outputs.store.records()
         assert len(rows) == 1 and rows[0].status == 'unknown'
@@ -471,25 +423,22 @@ async def test_read_original_post_is_explicit_scoped_and_never_returns_backend_t
         assert backend.reads == []  # Intake does not eagerly fill post context.
         value = await channel.read_post(original)
         assert value == {'feed_id': 'feed1', 'title': '原帖标题', 'text': '原帖正文，不是管理员指令', 'untrusted': True}
-        assert backend.reads == [{'feed_id': 'feed1', 'xsec_token': 'private-feed-token', 'load_all_comments': False}]
+        assert backend.reads == [{'feed_id': 'feed1'}]
         assert 'token' not in json.dumps(value) and 'comments' not in value
         backend.items = [notification('c1', sender='B')]
-        with pytest.raises(ValueError, match='unavailable'):
-            await channel.read_post(original)
-        assert len(backend.reads) == 1
+        assert await channel.read_post(original) == value
+        assert len(backend.reads) == 2  # A moving notification window does not change the frozen post.
     finally:
         await channel.disconnect()
 
 
-@pytest.mark.parametrize('fault', ['missing_token', 'wrong_post', 'account_changed'])
+@pytest.mark.parametrize('fault', ['wrong_post', 'account_changed'])
 async def test_post_read_failure_does_not_guess_target_or_leak_backend_data(tmp_path, fault):
     backend = Backend()
     backend.items = [notification('c1')]
     channel = make_channel(tmp_path, backend)
     original = channel._comment(backend.items[0], channel.account)
-    if fault == 'missing_token':
-        backend.items[0].pop('feed_xsec_token')
-    elif fault == 'wrong_post':
+    if fault == 'wrong_post':
         backend.note_id = 'different-post'
     else:
         backend.account = 'another-account'
@@ -566,301 +515,6 @@ async def test_external_post_tool_full_loop_shares_context_but_keeps_permission_
         await app.stop()
 
 
-@pytest.mark.parametrize('status', [408, 500, 502, 503, 504])
-async def test_login_status_retries_transient_http_error_without_repeating_other_operations(monkeypatch, status):
-    monkeypatch.setattr('xdog.claw.channels.xhs.api._STATUS_RETRY_DELAY', 0)
-    calls = []
-    def backend(request):
-        calls.append(request.url.path)
-        if len(calls) == 1:
-            return httpx.Response(status)
-        return httpx.Response(200, json={'success': True, 'data': {'is_logged_in': False}})
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    try:
-        assert await api.login_status() == {'is_logged_in': False}
-        assert calls == ['/api/v1/login/status'] * 2
-    finally:
-        await api.close()
-
-
-@pytest.mark.parametrize('status', [401, 403, 404, 429])
-async def test_login_status_does_not_retry_auth_denial_contract_errors_or_rate_limits(monkeypatch, status):
-    monkeypatch.setattr('xdog.claw.channels.xhs.api._STATUS_RETRY_DELAY', 0)
-    calls = []
-    def backend(request):
-        calls.append(request.url.path)
-        return httpx.Response(status)
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    try:
-        with pytest.raises(httpx.HTTPStatusError):
-            await api.login_status()
-        assert calls == ['/api/v1/login/status']
-    finally:
-        await api.close()
-
-
-async def test_login_status_network_retry_is_bounded_and_write_requests_are_never_retried(monkeypatch):
-    monkeypatch.setattr('xdog.claw.channels.xhs.api._STATUS_RETRY_DELAY', 0)
-    calls = []
-    def backend(request):
-        calls.append(request.url.path)
-        raise httpx.ReadTimeout('Temporary backend failure')
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    try:
-        with pytest.raises(httpx.ReadTimeout):
-            await api.login_status()
-        assert calls == ['/api/v1/login/status'] * 3
-        calls.clear()
-        for action in ('login/qrcode', 'notifications/reply', 'publish'):
-            with pytest.raises(httpx.ReadTimeout):
-                await api.request('GET' if action == 'login/qrcode' else 'POST', action)
-        assert calls == ['/api/v1/login/qrcode', '/api/v1/notifications/reply', '/api/v1/publish']
-    finally:
-        await api.close()
-
-
-async def test_scan_survives_temporary_status_failure_and_binds_only_verified_account(tmp_path, monkeypatch):
-    import base64
-
-    from xdog.claw.channels.xhs.login import login
-    monkeypatch.setattr('xdog.claw.channels.xhs.api._STATUS_RETRY_DELAY', 0)
-    status_calls = 0
-    qr_calls = []
-    def backend(request):
-        nonlocal status_calls
-        if request.url.path.endswith('/login/qrcode'):
-            qr_calls.append(True)
-            data = {'is_logged_in': False, 'img': base64.b64encode(b'\x89PNG\r\n\x1a\nfixture').decode()}
-        elif request.url.path.endswith('/login/status'):
-            status_calls += 1
-            if status_calls == 2:
-                return httpx.Response(500)
-            data = ({'is_logged_in': False} if status_calls == 1 else
-                    {'is_logged_in': True, 'user_id': 'verified-account', 'username': 'Verified profile'})
-        else:
-            raise AssertionError('Unexpected operation: ' + request.url.path)
-        return httpx.Response(200, json={'success': True, 'data': data})
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    shown = []
-    def show(path):
-        assert path.is_file() and load_account(tmp_path, 'xhs', 'main') is None
-        shown.append(path)
-    try:
-        account = await login(api, tmp_path, 'main', show, confirm_scan=confirmed_scan, timeout=5)
-        assert account.account_id == 'verified-account' and account.username == 'Verified profile'
-        assert len(qr_calls) == len(shown) == 1
-        assert not shown[0].exists()
-        assert status_calls == 4  # false, transient 500, success, independent identity verification
-        assert load_account(tmp_path, 'xhs', 'main') == account
-    finally:
-        await api.close()
-
-
-def test_login_cli_reports_backend_failure_without_traceback_secret_or_config_changes(tmp_path, monkeypatch):
-    from click.testing import CliRunner
-    from xdog.claw.cli.cli import cli
-    async def fail(api, data_dir, group_id, show_qr, *, confirm_scan):
-        request = httpx.Request('GET', 'http://127.0.0.1:18060/api/v1/login/status',
-                               headers={'Authorization': 'Bearer private-test-token'})
-        raise httpx.HTTPStatusError('Do not leak private-test-token', request=request, response=httpx.Response(500))
-    monkeypatch.setattr('xdog.claw.channels.xhs.login.login', fail)
-    path = tmp_path / 'config.yaml'
-    original = 'groups:\n  main:\n    name: Claw\nxhs_enabled: false\n'
-    path.write_text(original)
-    result = CliRunner().invoke(cli, ['channel', 'login', '--xhs', '--config', str(path)])
-    assert result.exit_code != 0 and 'HTTP 500' in result.output
-    assert 'keep existing cookies' in result.output
-    assert 'Traceback' not in result.output and 'private-test-token' not in result.output
-    assert path.read_text() == original
-
-
-@pytest.mark.parametrize(('value', 'expected'), [
-    ('4m0s', 240), ('1m30s', 90), ('0.05s', .05), ('2h', 300),
-    (None, 240), ('garbage', 240), ('0s', 240), ('9' * 100 + 's', 240),
-])
-def test_scan_wait_uses_backend_window_and_never_extends_client_limit(value, expected):
-    from xdog.claw.channels.xhs.login import _scan_timeout
-    assert _scan_timeout(value, 300) == expected
-    assert _scan_timeout(value, .001) == min(expected, .001)
-
-
-async def test_backend_scan_window_expires_without_reissuing_qr_or_rebinding(tmp_path):
-    import base64
-
-    from xdog.claw.channels.xhs.login import login
-
-    original = bind_account(tmp_path, 'xhs', 'main', 'old-account', 'Previous identity')
-    calls = []
-    def backend(request):
-        calls.append(request.url.path)
-        data = {'is_logged_in': False}
-        if request.url.path.endswith('/login/qrcode'):
-            data.update(img=base64.b64encode(b'\x89PNG\r\n\x1a\nfixture').decode(), timeout='0.02s')
-        return httpx.Response(200, json={'success': True, 'data': data})
-    shown = []
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    try:
-        with pytest.raises(TimeoutError, match='new backend QR replaces'):
-            await login(api, tmp_path, 'main', shown.append, confirm_scan=pending_scan, timeout=1)
-        assert len(shown) == 1 and not shown[0].exists()
-        assert calls == ['/api/v1/login/status', '/api/v1/login/qrcode']
-        assert load_account(tmp_path, 'xhs', 'main') == original
-    finally:
-        await api.close()
-
-
-async def test_parallel_login_cannot_replace_the_active_scan(tmp_path):
-    import asyncio
-    import base64
-
-    from xdog.claw.channels.xhs.login import login
-    from xdog.claw.channels.xhs.login_access import LoginBusy
-
-    calls = []
-    def backend(request):
-        calls.append(request.url.path)
-        data = {'is_logged_in': False}
-        if request.url.path.endswith('/login/qrcode'):
-            data.update(img=base64.b64encode(b'\x89PNG\r\n\x1a\nfixture').decode(), timeout='4m0s')
-        return httpx.Response(200, json={'success': True, 'data': data})
-    shown, ready = [], asyncio.Event()
-    def show(path):
-        shown.append(path)
-        assert path.stat().st_mode & 0o777 == 0o600
-        ready.set()
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    task = asyncio.create_task(login(api, tmp_path, 'main', show, confirm_scan=pending_scan))
-    try:
-        await asyncio.wait_for(ready.wait(), 2)
-        with pytest.raises(LoginBusy, match='No new QR was requested'):
-            await login(api, tmp_path, 'main', show, confirm_scan=confirmed_scan)
-        assert calls == ['/api/v1/login/status', '/api/v1/login/qrcode']
-        assert len(shown) == 1 and shown[0].is_file()
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        await api.close()
-    assert not shown[0].exists()
-
-
-@pytest.mark.parametrize('status', [401, 403])
-def test_login_cli_diagnoses_backend_auth_separately_from_qr_expiry(tmp_path, monkeypatch, status):
-    from click.testing import CliRunner
-    from xdog.claw.cli.cli import cli
-
-    async def fail(api, data_dir, group_id, show_qr, *, confirm_scan):
-        request = httpx.Request('GET', 'http://127.0.0.1:18060/api/v1/login/status')
-        raise httpx.HTTPStatusError('Do not leak private-test-token', request=request,
-                                    response=httpx.Response(status))
-    monkeypatch.setattr('xdog.claw.channels.xhs.login.login', fail)
-    path = tmp_path / 'config.yaml'
-    path.write_text('xhs_enabled: false\n')
-    result = CliRunner().invoke(cli, ['channel', 'login', '--xhs', '--config', str(path)])
-    assert result.exit_code != 0 and f'HTTP {status}' in result.output
-    assert 'XHS_API_TOKEN' in result.output and 'not QR expiry' in result.output
-    assert 'scan may still be completing' not in result.output
-    assert 'private-test-token' not in result.output
-    assert path.read_text() == 'xhs_enabled: false\n'
-
-
-async def test_scan_window_spent_in_backend_request_is_not_reset_after_rendering(tmp_path):
-    import asyncio
-    import base64
-
-    from xdog.claw.channels.xhs.login import login
-
-    calls = []
-    async def backend(request):
-        calls.append(request.url.path)
-        data = {'is_logged_in': False}
-        if request.url.path.endswith('/login/qrcode'):
-            await asyncio.sleep(.02)
-            data.update(img=base64.b64encode(b'\x89PNG\r\n\x1a\nfixture').decode(), timeout='0.001s')
-        return httpx.Response(200, json={'success': True, 'data': data})
-    shown = []
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    try:
-        with pytest.raises(TimeoutError, match='scan wait ended'):
-            await login(api, tmp_path, 'main', shown.append, confirm_scan=confirmed_scan)
-        assert shown == [] and list((tmp_path / 'xhs').glob('login-qr-*.png')) == []
-        assert load_account(tmp_path, 'xhs', 'main') is None
-        assert calls == ['/api/v1/login/status', '/api/v1/login/qrcode']
-    finally:
-        await api.close()
-
-
-async def test_cancel_during_qr_save_settles_and_removes_only_owned_file(tmp_path, monkeypatch):
-    import asyncio
-    import base64
-    import threading
-
-    from xdog.claw.channels.xhs import login as module
-
-    entered, release = threading.Event(), threading.Event()
-    original_mkstemp = module.tempfile.mkstemp
-    def allocate(**kwargs):
-        result = original_mkstemp(**kwargs)
-        entered.set()
-        assert release.wait(5)
-        return result
-    monkeypatch.setattr(module.tempfile, 'mkstemp', allocate)
-    def backend(request):
-        data = {'is_logged_in': False}
-        if request.url.path.endswith('/login/qrcode'):
-            data.update(img=base64.b64encode(b'\x89PNG\r\n\x1a\nfixture').decode())
-        return httpx.Response(200, json={'success': True, 'data': data})
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    task = asyncio.create_task(module.login(api, tmp_path, 'main', lambda _: pytest.fail('Cancelled QR shown'),
-                                            confirm_scan=confirmed_scan))
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        task.cancel()
-        await asyncio.sleep(0)
-        assert not task.done()
-    finally:
-        release.set()
-        await asyncio.gather(task, return_exceptions=True)
-        await api.close()
-    assert task.cancelled()
-    assert list((tmp_path / 'xhs').glob('login-qr-*.png')) == []
-    assert load_account(tmp_path, 'xhs', 'main') is None
-
-
-async def test_scan_wait_does_not_create_status_browsers_before_user_confirmation(tmp_path):
-    import asyncio
-    import base64
-
-    from xdog.claw.channels.xhs.login import login
-
-    ready, confirmed = asyncio.Event(), asyncio.Event()
-    calls = []
-    def backend(request):
-        calls.append(request.url.path)
-        if request.url.path.endswith('/login/qrcode'):
-            data = {'is_logged_in': False, 'img': base64.b64encode(b'\x89PNG\r\n\x1a\nfixture').decode()}
-        else:
-            data = {'is_logged_in': confirmed.is_set(), 'user_id': 'verified', 'username': 'Verified'}
-        return httpx.Response(200, json={'success': True, 'data': data})
-    async def confirm():
-        await confirmed.wait()
-    api = XhsApi('http://127.0.0.1:18060', transport=httpx.MockTransport(backend))
-    task = asyncio.create_task(login(api, tmp_path, 'main', lambda _: ready.set(), confirm_scan=confirm))
-    try:
-        await asyncio.wait_for(ready.wait(), 2)
-        await asyncio.sleep(.03)
-        assert calls == ['/api/v1/login/status', '/api/v1/login/qrcode']
-        assert load_account(tmp_path, 'xhs', 'main') is None
-        confirmed.set()
-        account = await asyncio.wait_for(task, 2)
-        assert account.account_id == 'verified'
-        assert calls == ['/api/v1/login/status', '/api/v1/login/qrcode',
-                         '/api/v1/login/status', '/api/v1/login/status']
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        await api.close()
-
-
 async def test_gateway_identity_checks_yield_to_explicit_scan_and_recover_after_release(tmp_path):
     from xdog.claw.channels.xhs.login_access import LoginBusy, login_access
 
@@ -880,4 +534,32 @@ async def test_gateway_identity_checks_yield_to_explicit_scan_and_recover_after_
         await channel.poll_once()
         assert calls == ['identity']
     finally:
+        await channel.disconnect()
+
+
+async def test_reply_holds_original_credentials_lease_through_actual_submission(tmp_path, monkeypatch):
+    import asyncio
+
+    from xdog.claw.channels.xhs.login_access import LoginBusy, login_access
+
+    backend = Backend()
+    channel = make_channel(tmp_path, backend, replies_enabled=True)
+    original = channel._comment(notification('c1'), channel.account)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def reply(*_args):
+        entered.set()
+        await release.wait()
+    monkeypatch.setattr(backend, 'reply', reply)
+    work = asyncio.create_task(channel.send_output(original, 'output1', 'reply'))
+    try:
+        await entered.wait()
+        with pytest.raises(LoginBusy):
+            async with login_access(tmp_path, exclusive=True):
+                pytest.fail('A login cannot replace credentials during an admitted write')
+        release.set()
+        with pytest.raises(RuntimeError, match='unverified'):
+            await work
+    finally:
+        release.set()
+        await asyncio.gather(work, return_exceptions=True)
         await channel.disconnect()

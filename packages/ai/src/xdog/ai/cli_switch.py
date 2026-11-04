@@ -66,8 +66,8 @@ def fetch_models(proxy_url: str, api_key: str) -> list[Model]:
             max_tokens=limits["max_output_tokens"], reasoning=row.get("reasoning", False),
             supported_efforts=tuple(row["supported_efforts"]) if row.get("supported_efforts") else None,
             input=tuple(cast(InputModality, m) for m in row.get("input", ["text"]) or ["text"]),
-            supports_tool_calls=row.get("supports_tool_calls", True),
-            supports_parallel_tool_calls=row.get("supports_parallel_tool_calls", False),
+            supports_tool_calls=row.get("supports_tool_calls"),
+            supports_parallel_tool_calls=row.get("supports_parallel_tool_calls"),
             supports_web_search=row.get("supports_web_search"),
             model_type=row.get("model_type", "chat"),
         ))
@@ -91,7 +91,7 @@ def _select_model(models: list[Model], role: str) -> Model | None:
 def configure_codex(model: Model, models: list[Model], proxy_url: str, api_key: str) -> None:
     if model.context_window <= 0:
         raise ValueError("Model context window is unknown; sync models and restart the XDOG proxy first")
-    if model.model_type != "chat" or not model.supports_tool_calls:
+    if model.model_type != "chat" or model.supports_tool_calls is False:
         raise ValueError("Codex requires a chat model with tool support")
     root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser().resolve()
     config = root / "config.toml"

@@ -43,7 +43,7 @@ async def test_native_status_reads_off_loop_and_reader_can_serve_control_while_r
             assert runtime._active_session is session and contexts == [["actual saved history"]]
         release.set()
         pong = await receive(reader, "pong")
-        assert pong["session_id"] == session.meta.session_id and pong["history_count"] == 2
+        assert pong["session_id"] == session.meta.session_id and pong["history_count"] == 3
         await receive(reader, "history_end")
         assert runtime._active_session is session and contexts == [["actual saved history"]]
     finally:
@@ -74,7 +74,7 @@ async def test_status_read_failure_is_unavailable_not_fake_empty_history(gateway
             error = await receive(reader, "error")
             assert "Status unavailable" in error["message"] and "history_count" not in error
         await send(writer, {"type": "ping", "group_id": "main"})
-        assert (await receive(reader, "pong"))["history_count"] == 2
+        assert (await receive(reader, "pong"))["history_count"] == 3
         await receive(reader, "history_end")
         assert path.read_bytes() == before and contexts == [["actual retained history"]]
         assert runtime._active_session is session

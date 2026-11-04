@@ -897,7 +897,7 @@ Complex extension forms are removed; basic child dialogs retain these ownership 
 
 ### Child specialization and protocol limits
 
-`/agents start --label Reviewer --instructions "Inspect only" --tools filesystem,current_time
+`/agents start --label Reviewer --system-prompt "Inspect only" --tools filesystem,current_time
 --fresh -- TASK` specializes a child without
 changing parent permissions. Options precede the task; `--` preserves a task that
 starts with flags. Plain tasks preserve quotes/newlines. `--tools none` gives the
@@ -909,7 +909,7 @@ selects only available parent skill bodies (`--skills none` selects none).
 Action/scoped grants use JSON settings, not invented command-line flags.
 
 In `/agents` press `n`, then Ctrl+G for settings JSON. Supported keys are `label`,
-`instructions`, `system_prompt`, `tools` (array or null for the delegable parent
+`system_prompt`, `tools` (array or null for the delegable parent
 subset), `skills`, `tool_actions`, `tool_scopes`, `inherit_context`, `model`,
 `thinking` and `preset`. `inherit_context` must be false; new children never copy
 parent conversation/system context. Enter applies the settings draft only;
@@ -917,9 +917,7 @@ start review requires every page to be painted before confirmation. Resize inval
 that review. This confirmation does NOT approve tool use. Effective settings persist
 with child results and appear in complete child source. Runtime budget options
 `--timeout`, `--calls`, `--tokens` and config/preset keys `timeout`, `max_model_calls`,
-`max_tokens` are removed and rejected for new starts. Historical child records with
-these budget fields remain readable; the fields are inert and never reapply a
-budget or restart work. This removal does not remove the actual model's per-request
+`max_tokens` are removed and rejected for new starts. Saved child configurations with retired fields are rejected, not translated. This removal does not remove the actual model's per-request
 output token ceiling.
 `--fresh` explicitly selects the no-parent-history behavior (also the default);
 `inherit_context: true` is rejected. It does not remove parent validation/context
@@ -1012,7 +1010,7 @@ using this descriptor shape:
     "reviewer": {
       "description": "Inspect and report without workspace mutations",
       "config": {
-        "instructions": "Review requested code; return findings with file locations.",
+        "system_prompt": "Review requested code; return findings with file locations.",
         "tools": ["filesystem", "current_time"],
         "inherit_context": false,
         "label": "Reviewer"
@@ -1482,7 +1480,8 @@ Claw's read-only session bridge uses `extension_session:1` and
 `extension_session_inspection:1`; terminal command-menu inspection separately uses
 `extension_command_catalog:1` and its generation. No editor/navigation/mutation
 capability or separate extension name/active-tools flag is needed. Native
-`session_name_read` and `tool_inventory_selection` controls remain independent.
+`session_name_read` remains independent; tool inventories always include current
+selection metadata, with no older snapshot format.
 Session/tree catalogs read the bound backend directly; listing them does not grant
 plugin navigation authority.
 
@@ -2558,8 +2557,8 @@ it without a hard-coded fallback. `/keys` shows the current binding.
 
 Save and recovery use a **standalone primary-draft surface**, never the child
 browser. `/draft restore [SNAPSHOT_ID]` opens an explicit selector of at most **32**
-snapshots or loads one exact ID. `/draft saved [SNAPSHOT_ID]` remains an alias;
-`/draft saved list` opens the same bounded selector, not a management catalog.
+snapshots or loads one exact ID. Old `/draft saved` and `/draft saved list`
+aliases are removed; this selector is not a management catalog.
 Each entry discloses its ID and stored action/slot, scope and label; Enter opens
 full text/provenance/image-digest review before any restore can be confirmed.
 There is no primary catalog/delete/search management UI or automatic latest-slot
@@ -2710,8 +2709,8 @@ It cannot combine with model/permission/resume overrides. Enqueue ACK loss permi
 same-ID/content dedup retry; standard prompt outcome-unknown never does. There is
 no automatic harness/observer startup or exactly-once side-effect guarantee.
 
-The old event-host package/environment/capabilities are removed, while stored
-`xdog.external_event.v1` history remains readable. New external model input is
+The old event-host package/environment/capabilities and historical event decoder
+are removed. No old-record migration or rendering branch is retained. External model input is
 `xdog.session_input.v1`; a nonsecret `XDOG_SESSION_ID` tool-environment hint follows
 session navigation without granting permissions. See the [full protocol and
 receiver setup](../../docs/acp-session-routing.md).
@@ -2891,3 +2890,22 @@ models and scheduling can have effects even during validation, so normal tool
 permissions apply. Loading/registering Flow starts no workflow. Cancellation
 settles its owned CLI process group, never automatically retries interrupted
 effects. See [Flow](../flow/README.md).
+
+Thinking levels use only `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`;
+configuration defaults to `medium`. Retired aliases (`normal`, `deep`,
+`ultrathink`, `none`) fail validation instead of being silently translated.
+
+### Removed interfaces and stored formats
+
+No old planning state is converted into access permissions. Current saved sessions
+must contain explicit access metadata; old planning sidecars/records are rejected,
+not migrated. A completed child needs its current safe SDK snapshot to continue;
+there is no history-based reconstruction or read-only compatibility continuation.
+Child task knowledge belongs in the explicit task; the removed `instructions`
+field/flag is not accepted. Use `system_prompt` only for an explicitly selected
+child-owned role. Current permissions/owner checks still apply.
+
+Coding Inbox records use version 3. Old approval states, `legacy_order`, version
+1/2 migration and synthetic execution-order backfill are removed. Execution
+history requires the current admission/timestamp fields. Unknown effects remain
+interrupted, never automatically replayed.

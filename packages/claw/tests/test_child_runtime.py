@@ -81,7 +81,7 @@ async def test_runtime_store_extension_ownership_and_sdk_parent_without_conversa
         await app.stop()
 
 
-async def test_legacy_instructions_are_first_user_material_and_not_system_authority(tmp_path):
+async def test_explicit_task_material_is_not_system_authority(tmp_path):
     calls = []
     def stream(model, context, options):
         calls.append(context)
@@ -89,15 +89,15 @@ async def test_legacy_instructions_are_first_user_material_and_not_system_author
     app = application(tmp_path, stream)
     try:
         session = await prepared(app)
-        identifier = await session.children.runtime.start('TASK KNOWLEDGE', config={
-            'system_prompt': 'CHILD SYSTEM ROLE', 'instructions': 'LEGACY USER MATERIAL', 'tools': [], 'skills': []})
+        identifier = await session.children.runtime.start('TASK KNOWLEDGE\nEXPLICIT USER MATERIAL', config={
+            'system_prompt': 'CHILD SYSTEM ROLE', 'tools': [], 'skills': []})
         record = await session.children.runtime.control('wait', identifier)
         assert record['status'] == 'completed'
         assert 'CHILD SYSTEM ROLE' in str(calls[0].system_prompt)
         assert 'TASK KNOWLEDGE' not in str(calls[0].system_prompt)
-        assert 'LEGACY USER MATERIAL' not in str(calls[0].system_prompt)
-        assert 'LEGACY USER MATERIAL' in str(calls[0].messages[0].content)
-        assert record['config']['instructions'] == 'LEGACY USER MATERIAL'
+        assert 'EXPLICIT USER MATERIAL' not in str(calls[0].system_prompt)
+        assert 'EXPLICIT USER MATERIAL' in str(calls[0].messages[0].content)
+        assert 'instructions' not in record['config']
         assert session.children.store.load()[0]['config']['skills'] == []
     finally:
         await app.stop()

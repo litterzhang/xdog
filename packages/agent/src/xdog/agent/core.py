@@ -23,6 +23,7 @@ from typing import (
 if TYPE_CHECKING:
     from xdog.agent.compaction import CompactionConfig
 
+from xdog.agent.tool_outcomes import ToolArtifact, ToolFailure
 from xdog.ai.types import (
     AssistantMessage,
     Context,
@@ -136,6 +137,16 @@ class AgentToolResult:
         if not isinstance(text, str):
             raise ValueError('Tool text result requires a string')
         return cls(content=(TextContent(text=text),), is_error=is_error, details=details)
+
+    @classmethod
+    def from_failure(cls, failure: ToolFailure) -> AgentToolResult:
+        return cls.from_text(failure.message, is_error=True, details={'failure': failure.to_dict()})
+
+    @classmethod
+    def from_artifact(cls, artifact: ToolArtifact, preview: str) -> AgentToolResult:
+        """Keep full output in the host store; a host tool must authorize retrieval."""
+        return cls.from_text(preview + '\nArtifact reference: ' + artifact.id,
+                             details={'artifact': artifact.to_dict()})
 
 
 AgentToolUpdateCallback = Callable[[AgentToolResult], Awaitable[None]]

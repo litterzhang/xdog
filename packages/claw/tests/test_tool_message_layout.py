@@ -3,7 +3,7 @@
 from xdog.ai.types import ImageContent
 from xdog.claw.channels.tui.tui_app import AssistantMessage, ToolMessage
 from xdog.tui.components.image import Image
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 def rows(component, width=100):
@@ -13,7 +13,7 @@ def rows(component, width=100):
 def test_claw_inline_list_flows_in_the_shared_markdown():
     message = AssistantMessage('- before `code` **after**')
     assert [row for row in rows(message) if row.strip()] == [
-        '   agent · 来源:unknown · 触发:unknown · → 未知（无路由记录）', ' • - before code after',
+        '   agent · unknown → 未知', ' • - before code after',
     ]
 
 
@@ -22,7 +22,7 @@ def test_claw_compact_success_and_full_arguments_result_expansion():
     output = 'first\n' + 'x' * 600 + '\nFULL-TAIL'
     tool.set_result(output)
     assert rows(tool)[:3] == [
-        '   tool · 来源:unknown · 触发:unknown · → 未知（无路由记录）',
+        '   tool · unknown → 未知',
         ' • Ran filesystem read config.py', '   └ first · 2 hidden lines; Ctrl+O',
     ]
     assert tool.detail_body == output
@@ -37,7 +37,7 @@ def test_claw_running_cancel_and_error_keep_real_state_and_stream_tail():
         tool = ToolMessage('bash', {'command': 'pytest -q'})
         tool.set_streaming('old\nLATEST')
         assert rows(tool)[:3] == [
-            '   tool · 来源:unknown · 触发:unknown · → 未知（无路由记录）',
+            '   tool · unknown → 未知',
             ' • Running pytest -q', '   └ LATEST · 1 hidden lines; Ctrl+O',
         ]
         if terminal == 'cancel':
@@ -53,7 +53,7 @@ def test_claw_running_cancel_and_error_keep_real_state_and_stream_tail():
         tool.set_streaming('late delta')
         assert tool.detail_body == before
         for width in range(31):
-            assert all(visible_width(row) <= width for row in tool.render(width))
+            assert all(string_width(row) <= width for row in tool.render(width))
 
 
 def test_claw_tool_keeps_image_rendering_separate_from_text(monkeypatch):

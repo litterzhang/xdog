@@ -1011,7 +1011,7 @@ class ExtensionRuntime:
         revision = value['revision']
         if type(revision) is not int or not 0 <= revision <= 2**53:
             raise ValueError("Invalid live provider revision")
-        normalized = provider_catalog(value['providers'], live=True)
+        normalized = provider_catalog(value['providers'])
         if name in self._display_only and normalized:
             raise ValueError("Display-only extensions cannot register model providers")
         previous = client._provider_snapshot

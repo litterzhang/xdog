@@ -15,7 +15,7 @@ from xdog.tui.markdown_transforms import apply_markdown_transforms
 from xdog.tui.tui import Component
 from xdog.tui.utils import (
     apply_background_to_line,
-    visible_width,
+    string_width,
     wrap_text_with_ansi,
 )
 
@@ -531,8 +531,6 @@ class Markdown(Component):
         self._default_style_prefix = None
 
     def render(self, width: int) -> list[str]:
-        # Legacy cell-buffer model
-        # New string-based model
         return self._render_lines(width)
 
     def preferred_height(self, width: int) -> int:
@@ -608,7 +606,7 @@ class Markdown(Component):
             if bg_fn:
                 content_lines.append(apply_background_to_line(line_with_margins, width, bg_fn))
             else:
-                vis_len = visible_width(line_with_margins)
+                vis_len = string_width(line_with_margins)
                 pad_needed = max(0, width - vis_len)
                 content_lines.append(line_with_margins + " " * pad_needed)
 
@@ -975,14 +973,14 @@ class Markdown(Component):
         natural_widths: list[int] = []
         for i, header_cell in enumerate(token.header):
             text = self._render_inline_tokens(header_cell.tokens, style_context)
-            natural_widths.append(visible_width(text))
+            natural_widths.append(string_width(text))
 
         for row in token.rows:
             for i, cell in enumerate(row):
                 text = self._render_inline_tokens(cell.tokens, style_context)
                 while i >= len(natural_widths):
                     natural_widths.append(0)
-                natural_widths[i] = max(natural_widths[i], visible_width(text))
+                natural_widths[i] = max(natural_widths[i], string_width(text))
 
         # Simple column width allocation
         total_natural = sum(natural_widths)
@@ -1023,7 +1021,7 @@ class Markdown(Component):
             parts = []
             for col_idx, cell_lines in enumerate(header_cell_lines):
                 text = cell_lines[line_idx] if line_idx < len(cell_lines) else ""
-                pad = max(0, col_widths[col_idx] - visible_width(text))
+                pad = max(0, col_widths[col_idx] - string_width(text))
                 parts.append(self._theme.bold(text + " " * pad))
             lines.append(f"\u2502 {cell_sep.join(parts)} \u2502")
 
@@ -1047,7 +1045,7 @@ class Markdown(Component):
                 parts = []
                 for col_idx, cell_lines in enumerate(row_cell_lines):
                     text = cell_lines[line_idx] if line_idx < len(cell_lines) else ""
-                    pad = max(0, col_widths[col_idx] - visible_width(text))
+                    pad = max(0, col_widths[col_idx] - string_width(text))
                     parts.append(text + " " * pad)
                 lines.append(f"\u2502 {cell_sep.join(parts)} \u2502")
 
@@ -1060,7 +1058,3 @@ class Markdown(Component):
 
         lines.append("")  # spacing after table
         return lines
-
-
-# Backward compatibility alias
-MarkdownComponent = Markdown

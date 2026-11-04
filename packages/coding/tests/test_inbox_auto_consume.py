@@ -354,7 +354,9 @@ async def test_stopping_intake_prevents_new_claims_before_owner_resource_shutdow
 
 
 async def test_direct_sdk_prompt_activates_the_borrowed_owner(coding_session):
-    assert await asyncio.wait_for(coding_session.send_message('human'), 1) is not None
+    # Cold capability/daemon startup does real owned IO; use the suite's normal
+    # correctness deadline, not a one-second performance assumption.
+    assert await asyncio.wait_for(coding_session.send_message('human'), 5) is not None
     assert coding_session._sdk_controller is not None
     assert coding_session.capabilities.get("goal").loop is coding_session._sdk_controller._loop
 

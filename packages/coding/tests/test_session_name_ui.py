@@ -26,7 +26,7 @@ def app(tmp_path: Path):
         skills=SkillRepo().register(directory=tmp_path / 'skills', name='shared')),
         session_data=manager.create_session(working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'), working_dir=tmp_path,
-        tool_repo=None, bash=None, permissions=PermissionManager('deny'))
+        tool_repo=None, permissions=PermissionManager('deny'))
     session.agent.replace_messages([UserMessage(content='ORIGINAL-QUESTION'),
         AssistantMessage(content=(TextContent(text='ORIGINAL-ANSWER'),))])
     session._persist()
@@ -104,8 +104,10 @@ async def test_name_save_failure_invalid_input_and_busy_agent_preserve_bytes_and
         assert ui._editor.get_text() == '/name Busy' and ui._command is None
         ui._worker_active = False
         assert manager._session_path(session.session_id).read_bytes() == before
-        legacy = SessionData.from_dict({'session_id': 'legacy'})
-        assert legacy.name == ''
+        with pytest.raises(ValueError, match='Missing saved access'):
+            SessionData.from_dict({'session_id': 'old'})
+        current = SessionData.from_dict({'session_id': 'current', 'access': {'read_only': False, 'revision': 0}})
+        assert current.name == ''
     finally:
         ui._worker_active = False
         ui._request_exit()

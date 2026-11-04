@@ -7,7 +7,7 @@ from xdog.coding.cli.args import cli
 from xdog.coding.cli.session_picker import SessionPicker
 from xdog.coding.core.session_manager import SessionManager
 from xdog.tui.keys import KeyEvent
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 
 def test_sessions_filter_before_limit_and_preserve_directory(tmp_path):
@@ -34,7 +34,7 @@ def test_selector_navigation_cancel_and_height(tmp_path):
     picker.set_height(6)
     rows = picker.render(35)
     assert len(rows) <= 6
-    assert all(visible_width(row) <= 35 for row in rows)
+    assert all(string_width(row) <= 35 for row in rows)
     picker.handle_input(KeyEvent(key="end"))
     assert picker.selected_item == picker.items[-1]
     picker.handle_input(KeyEvent(key="enter"))

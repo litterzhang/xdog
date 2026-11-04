@@ -7,7 +7,7 @@ import json
 import pytest
 from xdog.tui.components.mcp_panel import McpPanel
 from xdog.tui.keys import KeyEvent, KeyEventType
-from xdog.tui.utils import visible_width
+from xdog.tui.utils import string_width
 
 
 @pytest.fixture
@@ -109,5 +109,5 @@ def test_argument_editor_remains_bounded_without_rendering_literal_controls(prom
         for width in (24, 32, 80):
             rows = panel.render(width)
             assert len(rows) <= height
-            assert all(visible_width(row) <= width and "\n" not in row and "\x1b[2J" not in row for row in rows)
+            assert all(string_width(row) <= width and "\n" not in row and "\x1b[2J" not in row for row in rows)
     assert len(sent) == count

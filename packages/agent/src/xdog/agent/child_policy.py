@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import math
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
@@ -120,10 +119,7 @@ def _validate_action_selection(tool: AgentTool, selected: tuple[str, ...]) -> No
     schema = tool.parameters
     properties = schema.get("properties", {})
     action_schema = properties.get("action") if isinstance(properties, dict) else None
-    candidates = schema.get("enum")
-    legacy_actions = (tuple(row.get("action") for row in candidates if isinstance(row, dict))
-                      if isinstance(candidates, list) else None)
-    if action_schema is None and not any(isinstance(value, str) for value in legacy_actions or ()):
+    if action_schema is None:
         raise ValueError(
             f"Child tool_actions[{tool.name!r}] requires a tool with a declared 'action' parameter; "
             f"{tool.name} is not a multi-action tool. Omit its tool_actions entry (not the tools entry). "
@@ -138,8 +134,7 @@ def _validate_action_selection(tool: AgentTool, selected: tuple[str, ...]) -> No
         root = validator(schema, registry=cast(Any, Registry)(retrieve=_deny_reference))
         for action in selected:
             # evolve retains the root resolver for local action-schema references.
-            if ((action_schema is not None and not root.evolve(schema=action_schema).is_valid(action))
-                    or (legacy_actions is not None and action not in legacy_actions)):
+            if not root.evolve(schema=action_schema).is_valid(action):
                 raise ValueError(f"Unsupported literal action {action!r}")
     except Exception as exc:
         raise ValueError(
@@ -189,50 +184,11 @@ class ChildDelegation:
         return tuple(tool.name for tool in self.tools)
 
     def provider_parameters(self, name: str) -> dict[str, Any]:
-        """Return detached provider advertisement, never a grant of authority.
-
-        Legacy scalar-valued object enums are advertised field by field, so the
-        provider may accept combinations or omissions outside the original grant.
-        The model is not a security boundary: hosts must still call ``check`` at
-        actual execution to enforce the unchanged authoritative ``schemas``.
-        Additional root keywords on legacy enums are refused rather than dropped.
-        """
+        """Return the unchanged frozen schema; no legacy normalization or widening."""
         source = next((tool for tool in self.tools if tool.name == name), None)
         if source is None:
             raise ValueError('Child tool is outside its delegation')
-        schema = copy.deepcopy(self.schemas[self.tools.index(source)] if self.schemas else source.parameters)
-        if schema.get('type') != 'object' or 'enum' not in schema:
-            return schema
-        if set(schema) != {'type', 'enum'}:
-            raise ValueError('Legacy object enum has unsupported root constraints')
-        candidates = schema['enum']
-        if not isinstance(candidates, list) or not candidates:
-            raise ValueError('Legacy object enum requires a nonempty list of objects')
-        properties: dict[str, Any] = {}
-        required: set[str] | None = None
-        for candidate in candidates:
-            if not isinstance(candidate, dict) or any(type(key) is not str for key in candidate):
-                raise ValueError('Legacy object enum candidates must be JSON objects with string keys')
-            required = set(candidate) if required is None else required.intersection(candidate)
-            for key, value in candidate.items():
-                value_type = {type(None): 'null', bool: 'boolean', int: 'integer',
-                              float: 'number', str: 'string'}.get(type(value))
-                if value_type is None or (type(value) is float and not math.isfinite(value)):
-                    raise ValueError('Legacy object enum fields must be finite JSON scalars')
-                prop = properties.setdefault(key, {'type': [], 'enum': []})
-                if value_type not in prop['type']:
-                    prop['type'].append(value_type)
-                # JSON booleans and numbers are distinct, despite True == 1 in
-                # Python. Integer/float representations of the same JSON number
-                # are equal and must not create duplicate enum entries.
-                if not any(value == old and (type(value) is bool) == (type(old) is bool)
-                           for old in prop['enum']):
-                    prop['enum'].append(value)
-        for prop in properties.values():
-            if len(prop['type']) == 1:
-                prop['type'] = prop['type'][0]
-        return {'type': 'object', 'properties': properties,
-                'required': sorted(required or ()), 'additionalProperties': False}
+        return copy.deepcopy(self.schemas[self.tools.index(source)] if self.schemas else source.parameters)
 
     def scoped_parameters(self, name: str, parameters: dict[str, Any]) -> dict[str, Any]:
         """Advertise scoped fields/literals, intersected with the frozen grant/actions."""
@@ -240,11 +196,8 @@ class ChildDelegation:
         if source is None:
             raise ValueError("Scoped tool is outside its original delegation")
         parent_schema = self.schemas[self.tools.index(source)] if self.schemas else source.parameters
-        # Ordinary provider normalization may lose legacy object-enum pairing.
-        # Never turn that deliberately tolerant advertisement into an authority
-        # snapshot for a newly scoped tool; unsupported legacy scopes fail closed.
         if parent_schema.get("type") == "object" and "enum" in parent_schema:
-            raise ValueError("Scoped tools require inline property schemas, not legacy object enums")
+            raise ValueError("Scoped tools require inline property schemas, not whole-object enums")
         schema = _schema_intersection(parameters, parent_schema)
         selected = dict(self.actions).get(name)
         if selected is not None:

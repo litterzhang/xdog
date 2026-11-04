@@ -93,7 +93,6 @@ from xdog.tui.utils import (
     string_width,
     strip_ansi,
     truncate_to_width,
-    visible_width,
     wrap_text,
     wrap_text_with_ansi,
 )
@@ -196,7 +195,6 @@ __all__ = [
     "string_width",
     "strip_ansi",
     "truncate_to_width",
-    "visible_width",
     "wrap_text",
     "wrap_text_with_ansi",
 ]

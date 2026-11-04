@@ -94,9 +94,11 @@ skill状态、SDK压缩摘要/边界、session/run标识。不保存callable、�
 模型必须由当前adapter支持；`allowed_models`可以进一步限制恢复的模型。工具、权限、
 provider和自动压缩开关始终由当前宿主提供，快照不是能力授权。
 
-已有无版本的部分快照仍走明确的legacy校验路径；缺少字段保持原值。老快照已拼接的skill前缀
-无法可靠拆解，不能承诺其拥有新格式的skill/压缩恢复语义。新格式保留`system_prompt`、
-`thinking`、`temperature`、`max_tokens`兼容读取字段，但它们必须与规范字段一致；冲突会拒绝。
+只接受当前版本的规范快照，不接受无版本的部分快照或补丁语义。system prompt 仅使用
+`base_system_prompt`，生成参数仅使用 `options`；顶层 `system_prompt`、`thinking`、
+`temperature`、`max_tokens` 即使值相同也会作为未知字段拒绝。没有旧格式解码器、别名或
+自动迁移；恢复失败不会修改当前 Agent、扩大权限或启动模型。Flow 的真实、stub 和生成
+执行路径均使用这一份规范格式。
 
 ### 安全边界与中断
 

@@ -26,13 +26,7 @@ class Spacer(Component):
         pass
 
     def render(self, width: int) -> list[str]:
-        # Legacy cell-buffer model
-        # New string-based model
         return [""] * self._lines
 
     def preferred_height(self, width: int) -> int:
         return self._lines
-
-
-# Backward compatibility alias
-SpacerComponent = Spacer

@@ -86,7 +86,6 @@ class SessionData:
     working_dir: str = ""
     active_branch: str = ""
     access: dict[str, Any] = field(default_factory=lambda: AccessState().to_dict())
-    legacy_plan: dict[str, Any] | None = None
     extension_entries: dict[str, Any] = field(default_factory=dict)
     compaction: dict[str, Any] | None = None
     name: str = ""
@@ -106,7 +105,6 @@ class SessionData:
             "branches": self.branches,
             "active_branch": self.active_branch,
             "access": self.access,
-            "legacy_plan": self.legacy_plan,
             "extension_entries": self.extension_entries,
             "compaction": self.compaction,
             "active_tools": list(self.active_tools) if self.active_tools is not None else None,
@@ -130,7 +128,6 @@ class SessionData:
             working_dir=data.get("working_dir", ""),
             active_branch=data.get("active_branch", ""),
             access=access.to_dict(),
-            legacy_plan=data.get("legacy_plan") if data.get("legacy_plan") is not None else data.get("plan"),
             extension_entries=data.get("extension_entries", {}),
             compaction=saved_record(data.get("compaction")),
             active_tools=active_tool_names(data.get("active_tools")),

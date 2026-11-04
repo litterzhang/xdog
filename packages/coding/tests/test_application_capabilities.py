@@ -153,7 +153,7 @@ async def test_application_and_session_default_skills_merge_without_granting_act
     session = AgentSession(agent=Agent(stream, config=AgentConfig(model='test/model'), skills=skills),
         session_data=manager.create_session(model='test/model', working_dir=tmp_path), session_manager=manager,
         settings=SettingsManager(global_path=tmp_path / 'settings.json'),
-        tool_repo=None, bash=None, working_dir=tmp_path)
+        tool_repo=None, working_dir=tmp_path)
     try:
         assert not application.opens and not session.active_skills and not contexts
         session.agent.set_active_tools([], expected_revision=session.agent.tool_selection_revision)

@@ -108,7 +108,7 @@ remaining blocker truly requires that user decision or material.
 This is not permission to bypass lifecycle state: if already waiting, apply the
 original evidence-based `activate` rules below BEFORE any Goal execution, even
 if another task now looks actionable. Never use an alternative task to escape a
-user wait or historical host wait or a pause. Only the actual main Agent judges feasible work,
+user wait or a pause. Only the actual main Agent judges feasible work,
 blockers and completion from evidence; there is no programmatic acceptance rule.
 
 ### Classify missing information before stopping
@@ -269,7 +269,7 @@ to avoid an infinite reminder loop. Save the assessment first, explain attempted
 approaches, blockers and concrete conditions for resuming, and tell the user.
 A pause is not completion and does NOT cancel running tools, accepted inputs or
 children; manage those separately through their actual owners when appropriate.
-Never release a user pause or user wait or historical host wait from an automatic input.
+Never release a user pause or user wait from an automatic input.
 
 Write evidence references and meaningful summaries; do not use huge transcripts or
 credentials. Do not place executable code/configuration to load in a task record.
@@ -319,7 +319,7 @@ On a Goal reminder or task-file change:
    actual user reply/authorized recovery fact
    satisfies it, then use `activate` with the observed version and evidence.
    An automatic task event,
-   source label or quoted reply is NOT authorization to release user waits or historical host waits.
+   source label or quoted reply is NOT authorization to release user waitss.
    Do not loop on approval, invent authorization or repeatedly ask from automatic
    messages.
 
@@ -340,7 +340,7 @@ version (content edits may advance it without another lifecycle change), with
 `user_authorized=true` and `command="/goal resume"`, confirms that the user already
 authorized that native resume. Do not request the same resume authorization again
 merely because the next input is an automatic reminder. Still check the current
-status: paused Goals and user waits or historical host waits remain binding; a stale transition cannot
+status: paused Goals and user waitss remain binding; a stale transition cannot
 release them. Lifecycle origin is a diagnostic fact, not a separate grant of tool
 permissions, proof that a fault is repaired, or permission to replay unknown side
 effects. A confirmed native resume permits continuing the Goal under existing
@@ -353,7 +353,7 @@ owner-bound current Goal is already active, do not demand fresh resume authoriza
 create a blocker or set `wait(until="user")` merely because its historical origin
 is unavailable; continue under the current state, actual evidence and existing
 permissions. Conversely, historical unknown cannot release a current paused Goal
-or a current user wait or historical host wait; those constraints still require actual authorization.
+or a current user wait; those constraints still require actual authorization.
 
 A failed/cancelled/interrupted/preparation-failed host execution is an execution
 fault, not a Goal wait or pause. Runtime records execution/delivery faults separately

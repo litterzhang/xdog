@@ -2,7 +2,7 @@
 
 import pytest
 from xdog.tui.components.tool_message import ToolMessage
-from xdog.tui.utils import strip_ansi, visible_width
+from xdog.tui.utils import string_width, strip_ansi
 
 
 @pytest.mark.parametrize(('name', 'args', 'expected'), [
@@ -40,7 +40,7 @@ def test_previews_are_bounded_full_results_retained_and_single_line_details_disc
         for width in range(81):
             rows = tool.render(width)
             assert len(rows) == 3
-            assert all(visible_width(row) <= width for row in rows)
+            assert all(string_width(row) <= width for row in rows)
             assert all('\n' not in row and '\r' not in row for row in rows)
             assert all('\x1b' not in row for row in rows)
     tool.update(header='• Ran test', summary='', output='x' * 1000, running=False, style=lambda text: text)
@@ -63,7 +63,7 @@ def test_preview_truncation_keeps_combining_graphemes_and_cell_bounds():
         tool.update(header='tool', summary='', output=output, running=running, style=lambda text: text)
         for width in range(90):
             rows = tool.render(width)
-            assert all(visible_width(row) <= width for row in rows)
+            assert all(string_width(row) <= width for row in rows)
             assert rows[1].count('e') == rows[1].count('\u0301')
         assert tool.detail_body == output
 
