@@ -203,8 +203,11 @@ def test_native_batch_keeps_all_attachment_metadata_until_shared_stream_finishes
 
     coding_session.model_info = Model(id='vision', input=('text','image'))
     calls,painted = [],[]
-    coding_session.agent.set_stream_fn(lambda _,context,*args: calls.append(context) or EventStream.empty(
-        AssistantMessage(content=(TextContent(text='images answered'),))))
+    def stream(_, context, *args):
+        if not isinstance(context.system_prompt, str):  # Primary prompt is structured.
+            calls.append(context)
+        return EventStream.empty(AssistantMessage(content=(TextContent(text='images answered'),)))
+    coding_session.agent.set_stream_fn(stream)
     ui = InteractiveMode(coding_session)
     ui._session_events.start()
     runtime = coding_session.runtime

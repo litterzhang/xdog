@@ -108,7 +108,8 @@ async def test_application_rotation_uses_selected_model_reasoning_skills_and_too
             return [self.resolve_model("test/default"), self.resolve_model("test/chosen")]
 
         def __call__(self, model, context, options):
-            calls.append((model, context, options))
+            if not isinstance(context.system_prompt, str):  # Count conversation, not title metadata.
+                calls.append((model, context, options))
             return EventStream.empty(AssistantMessage(content=(TextContent(text="offline reply"),)))
 
     app = Orchestrator(ClawConfig(data_dir=str(tmp_path / "data")), model="test/default", stream_fn=Stream())

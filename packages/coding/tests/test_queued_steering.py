@@ -28,6 +28,8 @@ def held_model(session):
     contexts = []
 
     def stream(model, context, options):
+        if isinstance(context.system_prompt, str) and context.system_prompt.startswith("Write a short"):
+            return EventStream.empty(AssistantMessage())
         contexts.append(context)
         response = AssistantMessage(content=(TextContent(text=f'response-{len(contexts)}'),))
         first = len(contexts) == 1

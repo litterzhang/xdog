@@ -8,6 +8,16 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Generate Coding and Claw session names once in the background after a successful
+  trusted human turn, using an independent bounded tool-free model request rather
+  than another Agent. Persist attempt revisions; preserve manual rename/clear,
+  original-owner cancellation, history and existing execution controls.
+- Show the current session name in the TUI terminal window title, with an unnamed
+  application/group fallback and save/restore across exit and external editors
+  on supporting terminals.
+
 ## [2.6.0] — 2026-11-05
 
 ### Changed

@@ -313,11 +313,27 @@ activates, `r` refreshes, and `n` creates a new session. Escape first exits sear
 then closes the panel. `sessions`/`tree` are configurable keymap actions; tree is
 unbound by default to avoid stealing existing Alt+T custom shortcuts.
 
+After the first successful trusted human turn, an unnamed session makes one
+best-effort background title request using the actual selected native model.
+The request contains only the first 1,024 characters of that user request: no
+conversation history, workspace files, tools or web search. It creates no Agent
+and adds nothing to the transcript. Unknown model metadata and extension-provider
+models retain the existing preview. The persisted attempt is not automatically
+retried; invalid output or cancellation does not fail the conversation. Manual
+rename or clear supersedes pending results, including across restart. Navigation,
+context rotation and shutdown cancel the original background work.
+
+While the TUI owns the terminal, the window title follows the current session
+name, including automatic and manual updates. Unnamed sessions show the application
+name. The TUI saves/restores the previous window title
+on entry/exit and external-editor handoff where the terminal supports title stacks.
+Terminal settings or multiplexers may override or ignore these requests.
+
 `/name` inspects the current session name; `/name NAME` sets a durable plain-text
 name and `/name -` clears it. Names take precedence over automatic summaries in
 session-browser titles/search; they never replace conversation content or model
 instructions. Unicode is retained (256 UTF-8 bytes maximum); line/terminal controls
-and bidi overrides are rejected. Naming requires an idle current owner, makes no
+and bidi overrides are rejected. Manual naming requires an idle current owner, makes no
 model/tool calls, and does not activate a session or rewrite its history.
 
 Coding publishes a name only after its atomic session save succeeds and retains

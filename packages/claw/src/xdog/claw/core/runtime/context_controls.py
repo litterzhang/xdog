@@ -41,14 +41,15 @@ async def read_session_name(runtime: GroupRuntime, controller: GroupController,
 
 async def rename_session(runtime: GroupRuntime, controller: GroupController,
                          expected_session: str, name: str, *,
-                         expected_name: str | None = None, alive: Callable[[], bool] | None = None) -> str:
+                         expected_name: str | None = None, alive: Callable[[], bool] | None = None,
+                         expected_revision: int | None = None) -> str:
     async with controller.operation(context_change=True,
                                     validate=lambda: runtime.require_current(expected_session)):
         canceled = threading.Event()
         task = asyncio.create_task(asyncio.to_thread(
             runtime.rename_session, expected_session, name,
             lambda: not canceled.is_set() and (alive is None or alive()),
-            **({'expected_name': expected_name} if expected_name is not None else {})))
+            expected_name=expected_name, expected_revision=expected_revision))
         # Once disk admission happens, settle publication before releasing group ownership.
         while not task.done():
             try:

@@ -30,7 +30,8 @@ async def test_real_constructor_metadata_io_is_prepared_without_moving_agent_loo
     class NativeStream:
         def __call__(self, *args):
             assert threading.get_ident() == owner
-            calls.append(args)
+            if not isinstance(args[1].system_prompt, str):  # Primary prompt is structured.
+                calls.append(args)
             return EventStream.empty(AssistantMessage(content=(TextContent(text='Original owner model'),)))
 
         def resolve_model(self, name):
@@ -82,7 +83,8 @@ async def test_existing_native_model_controls_read_catalog_off_loop(tmp_path, mo
     class Catalog:
         def __call__(self, *args):
             assert threading.get_ident() == owner
-            calls.append(args)
+            if not isinstance(args[1].system_prompt, str):  # Primary prompt is structured.
+                calls.append(args)
             return EventStream.empty(AssistantMessage(content=(TextContent(text='Actual original input'),)))
 
         def resolve_model(self, name):

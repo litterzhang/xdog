@@ -47,7 +47,7 @@ async def stop_test_daemon(directory: Path) -> None:
 @asynccontextmanager
 async def isolated_eyes_daemon(*, prefix: str = 'test-eyes-') -> AsyncIterator[Path]:
     # Short socket paths; both controls are inherited by child interpreters.
-    root = Path(tempfile.mkdtemp(prefix=prefix, dir='/tmp'))
+    root = Path(tempfile.mkdtemp(prefix=prefix))
     directory = root / 'daemon'
     environment = pytest.MonkeyPatch()
     environment.setenv('XDG_STATE_HOME', str(root / 'state'))

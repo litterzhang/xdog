@@ -30,6 +30,8 @@ async def test_real_sdk_model_receives_supported_instructions_and_single_skill_i
     provider = _Provider(Model(id='offline/model', context_window=100_000))
     contexts = []
     def stream(model, context, options):
+        if isinstance(context.system_prompt, str) and context.system_prompt.startswith("Write a short"):
+            return EventStream.empty(AssistantMessage())
         contexts.append(context)
         return EventStream.empty(AssistantMessage())
     monkeypatch.setattr(provider, 'stream', stream)

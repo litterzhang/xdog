@@ -45,6 +45,9 @@ async def reset_context(runtime: GroupRuntime, expected_session: str) -> None:
             if (runtime._active_session is not previous or runtime._source_revision != generation
                     or (runtime.get_new_session_id() or '') != expected_session):
                 raise ValueError('Reset owner changed during handoff')
+        if previous is not None:
+            from xdog.claw.core.runtime.session_naming import close as close_name
+            await close_name(previous)
         runtime._drop_session()  # Retire on the Agent owner, never its IO worker.
         await run_owned(session_preparation.reset, runtime.transcript_store, runtime.group.id, plan.meta, draft)
 
@@ -64,10 +67,14 @@ async def close(runtime: GroupRuntime) -> None:
         except BaseException as exc:
             errors.append(exc)
         session = runtime._active_session
+        from xdog.claw.core.runtime.session_naming import settle as settle_names
+        await settle(settle_names(runtime))
         owners = tuple(runtime._retired_extensions)
         if session is not None:
             owners += (session.extensions,)
         if session is not None:
+            from xdog.claw.core.runtime.session_naming import close as close_name
+            await settle(close_name(session))
             await settle(session.agent.aclose(), session.children.runtime.aclose())
         await settle(runtime.capabilities.aclose())
         await settle(*(owner.aclose() for owner in owners))
@@ -128,7 +135,11 @@ async def prepare_session(runtime: GroupRuntime, *, allow_reset: bool = True) ->
                     or runtime.stream_fn is not configured_stream):
                 raise ValueError('Handoff owner changed before rotation')
         if previous is not None:
+            from xdog.claw.core.runtime.session_naming import close as close_name
+            await close_name(previous)
             runtime._drop_session()
+        from xdog.claw.core.runtime.session_naming import settle as settle_names
+        await settle_names(runtime)
         generation = runtime._source_revision
         data = await run_owned(partial(prepare, runtime.transcript_store, runtime.group.id,
             runtime.workspace_dir, runtime._configured_model, plan.meta, reset=plan.reset_due,

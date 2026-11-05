@@ -806,11 +806,27 @@ routes. `/` searches, Up/Down/PgUp/PgDn navigates, Right inspects a tree, Left r
 without changing the draft. There is no history-browser activation or `n` new-context
 shortcut. Shortcuts are configurable (`sessions`, `tree`); tree is unbound by default.
 
+After the first successful trusted human turn, an unnamed session makes one
+best-effort background title request using the actual selected native model.
+The request contains only the first 1,024 characters of that user request: no
+conversation history, workspace files, tools or web search. It creates no Agent
+and adds nothing to the transcript. Unknown model metadata and extension-provider
+models retain the existing preview. The persisted attempt is not automatically
+retried; invalid output or cancellation does not fail the conversation. Manual
+rename or clear supersedes pending results, including across restart. Navigation,
+context rotation and shutdown cancel the original background work.
+
+While the TUI owns the terminal, the window title follows the current session
+name, including automatic and manual updates. Unnamed sessions show the application
+name and, in Claw, the group. The TUI saves/restores the previous window title
+on entry/exit and external-editor handoff where the terminal supports title stacks.
+Terminal settings or multiplexers may override or ignore these requests.
+
 `/name` inspects the current session name; `/name NAME` sets a durable plain-text
 name and `/name -` clears it. Names take precedence over automatic summaries in
 session-browser titles/search; they never replace conversation content or model
 instructions. Unicode is retained (256 UTF-8 bytes maximum); line/terminal controls
-and bidi overrides are rejected. Name changes require an idle current owner, make no
+and bidi overrides are rejected. Manual name changes require an idle current owner, make no
 model/tool calls, and do not activate a session or rewrite its history.
 
 Claw requires independently advertised `session_rename: 1` support and an actual

@@ -72,6 +72,8 @@ async def test_installed_flow_tool_and_skill_in_actual_hosts_keep_original_permi
     }))
     params = {'arguments': ['run', 'workflow.json'], 'cwd': str(tmp_path)}
     def stream(_model, context, _options):
+        if isinstance(context.system_prompt, str) and context.system_prompt.startswith("Write a short"):
+            return EventStream.empty(AssistantMessage(content=(TextContent(text="Flow session"),)))
         contexts.append(context)
         response = (AssistantMessage(content=(ToolCall(id='flow-call', name='flow', arguments=params),),
                                      stop_reason='toolUse')

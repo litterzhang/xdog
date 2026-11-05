@@ -61,7 +61,9 @@ async def close_resources(session: AgentSession) -> None:
                 async def mcp() -> None:
                     if session.mcp is not None:
                         await session.mcp.aclose()
-                await settle_cleanup(stop_dialogs, capability_publication, session.agent.aclose,
+                from xdog.coding.core.session_naming import close as close_name
+                await settle_cleanup(lambda: close_name(session), stop_dialogs, capability_publication,
+                    session.agent.aclose,
                     session.children.runtime.aclose, capabilities, session._settle_retired_capabilities,
                     session._settle_retired_resources, session.extensions.aclose, mcp,
                     message='Coding session resource cleanup failed')

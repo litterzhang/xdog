@@ -124,6 +124,7 @@ class AgentSession:
     def __init__(self, *, runtime: GroupRuntime, session_meta: SessionMeta,
                  prepared: PreparedSession | None = None, prepared_stream: StreamFn | None = None) -> None:
         self._runtime = runtime
+        self._name_task: asyncio.Task[None] | None = None
         self._meta = session_meta
         self._group_id = runtime.group.id
         from xdog.claw.core.persistence.session_preparation import default_stream, read
@@ -143,6 +144,7 @@ class AgentSession:
         self._prepared_entries = data.entries_json
         self._prepared_extension_root = data.extension_root
         self._model_metadata = data.model
+        self._name_stream = effective_stream_fn
         self._human_inputs: dict[str, str] = {}
         self._authorized_messages: dict[int, UserMessage] = {}
         self._user_operation_authorized = False
@@ -301,6 +303,8 @@ class AgentSession:
         self._source_call_ids.clear()
 
     def dispose(self) -> None:
+        from xdog.claw.core.runtime.session_naming import cancel
+        cancel(self)
         # Clear only the inventory this session actually published. A retired
         # session cannot revoke another session's replacement repository.
         for name in self._tool_repo.names():

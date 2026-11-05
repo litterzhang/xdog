@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from xdog.agent.session_name import name_revision
 from xdog.claw.core.persistence.handoff import Draft
 from xdog.claw.core.persistence.transcript_validation import validate_entry
 from xdog.claw.core.types import SessionMeta
@@ -334,7 +335,7 @@ class TranscriptStore:
 
     def rename_session(self, group_id: str, session_id: str, name: str,
                        alive: Callable[[], bool] = lambda: True, *,
-                       expected_name: str | None = None) -> SessionMeta:
+                       expected_name: str | None = None, expected_revision: int | None = None) -> SessionMeta:
         """Journal catalog/index metadata together; never rewrite transcript or sidecars."""
         from xdog.agent.session_name import session_name
         from xdog.claw.core.persistence.managed_files import transaction
@@ -348,8 +349,11 @@ class TranscriptStore:
                 raise ValueError('Session name owner changed; refresh before retrying')
             if expected_name is not None and session_name(expected_name) != active.label:
                 raise ValueError('Session name changed since review; inspect before retrying')
+            if expected_revision is not None and active.name_revision != name_revision(expected_revision):
+                raise ValueError('Session name revision changed; automatic result discarded')
             catalog, index = copy.deepcopy(self._catalog), copy.deepcopy(self._index)
-            index[group_id] = {**index[group_id], 'label': selected}
+            index[group_id] = {**index[group_id], 'label': selected,
+                               'name_revision': name_revision(active.name_revision + 1)}
             catalog['sessions'][session_id] = {**catalog['sessions'][session_id], **index[group_id]}
             with transaction(self, {self._catalog_file, self._index_file}, alive=alive):
                 self._atomic(self._catalog_file, catalog)
@@ -434,7 +438,8 @@ class TranscriptStore:
                 created_at=data["created_at"],
                 last_active=data["last_active"],
                 turn_count=data.get("turn_count", 0),
-                label=data.get("label", "")
+                label=data.get("label", ""),
+                name_revision=name_revision(data.get("name_revision", 0)),
             )
         return None
 
@@ -508,7 +513,8 @@ class TranscriptStore:
             created_at=data["created_at"],
             last_active=now,
             turn_count=data.get("turn_count", 0) + 1,
-            label=data.get("label", "")
+            label=data.get("label", ""),
+            name_revision=name_revision(data.get("name_revision", 0)),
         )
 
         self._index[group_id] = {

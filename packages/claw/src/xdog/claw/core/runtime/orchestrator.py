@@ -103,6 +103,7 @@ class Orchestrator:
         self._input_calls: dict[tuple[InputScope, str], _InputCall] = {}
         self._inputs_stopping = False
         self._input_listeners: set[Callable[[InputScope], None]] = set()
+        self._name_listeners: set[Callable[[str, str, str], None]] = set()
 
     # -- Group registration ----------------------------------------------------
 
@@ -351,6 +352,17 @@ class Orchestrator:
     @property
     def data_dir(self) -> Path:
         return self._data_dir
+
+    def subscribe_session_names(self, callback: Callable[[str, str, str], None]) -> Callable[[], None]:
+        self._name_listeners.add(callback)
+        return lambda: self._name_listeners.discard(callback)
+
+    def _session_named(self, group_id: str, session_id: str, name: str) -> None:
+        for callback in tuple(self._name_listeners):
+            try:
+                callback(group_id, session_id, name)
+            except Exception:
+                logger.debug('Optional session metadata listener unavailable')
 
     def subscribe_inputs(self, callback: Callable[[InputScope], None]) -> Callable[[], None]:
         self._input_listeners.add(callback)
@@ -668,6 +680,13 @@ class Orchestrator:
                     on_assistant_message=on_assistant_message,
                     child_ui=child_ui,
                 )
+                if (result is not None and not result.error and not result.canceled
+                        and isinstance(message, UserInput) and not isinstance(message, ExternalInput)
+                        and message.identity is not None and message.identity.human_authorized
+                        and self._identity_current(message_record)):
+                    from xdog.claw.core.runtime.session_naming import start as start_name
+                    await start_name(session, message.content, self.group_controller(message.group_id),
+                                     self._session_named)
                 return replace(result, session_id=session.meta.session_id) if result is not None else None
             finally:
                 session.agent.set_tool_context({**session.agent.tool_context,

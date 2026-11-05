@@ -284,6 +284,9 @@ class TUI(Container):
     def __init__(self, *, fullscreen: bool = False) -> None:
         super().__init__()
         self.fullscreen = fullscreen
+        self._title: str | None = None
+        self._written_title: str | None = None
+        self._title_saved = False
         self._screen_change: bool | None = None
         self._saved_main_painter: MainBufferRenderer | None = None
         self._previous_lines: list[str] = []
@@ -501,6 +504,21 @@ class TUI(Container):
         self._running = False
         return True
 
+    def set_title(self, title: str) -> None:
+        """Set bounded plain window-title text on the UI owner, never terminal commands."""
+        self._title = ''.join(char for char in title[:256] if char.isprintable()).strip()
+        self._sync_title()
+
+    def _sync_title(self) -> None:
+        if not self._running or self._title is None or self._title == self._written_title:
+            return
+        if not self._title_saved:
+            sys.stdout.write("\x1b[22;2t")  # Save the previous window title, not the icon title.
+            self._title_saved = True
+        sys.stdout.write(f"\x1b]2;{self._title}\x1b\\")
+        sys.stdout.flush()
+        self._written_title = self._title
+
     @property
     def stopped(self) -> bool:
         return self._stopped
@@ -523,6 +541,7 @@ class TUI(Container):
                 if not resumed:
                     sys.stdout.write("\r\n")
                 sys.stdout.write(protocol.startup())
+                self._sync_title()
                 sys.stdout.flush()
                 if external_resume and not self.fullscreen:
                     self._anchor_terminal(stdin, protocol, resumed=True, external=True)
@@ -534,6 +553,10 @@ class TUI(Container):
                 self._running = False
                 try:
                     if enabled:
+                        if self._title_saved:
+                            sys.stdout.write("\x1b[23;2t")
+                            self._title_saved = False
+                            self._written_title = None
                         if self._external_callback is not None:
                             sys.stdout.write(self._painter.handoff())
                         elif not self._suspend_requested:

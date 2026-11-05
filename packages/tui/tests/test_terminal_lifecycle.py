@@ -27,6 +27,7 @@ def test_raw_terminal_restored_after_failure_or_eof(monkeypatch, failure) -> Non
     monkeypatch.setattr(module.sys, "stdout", output)
     monkeypatch.setattr(module, "StdinBuffer", lambda: reader)
     tui = TUI()
+    tui.set_title("Current session")
     def fail(*args, **kwargs):
         raise RuntimeError("injected failure")
     if failure == "raw":
@@ -52,6 +53,8 @@ def test_raw_terminal_restored_after_failure_or_eof(monkeypatch, failure) -> Non
                 tui.start()
         assert termios.tcgetattr(slave) == original
         assert not tui.is_running
+        assert output.getvalue().count("\x1b[22;2t") == int(failure != "raw")
+        assert output.getvalue().count("\x1b[23;2t") == int(failure != "raw")
         if failure != "raw":
             assert "\x1b[?2004l" in output.getvalue()
             assert "\x1b[?25h" in output.getvalue()
@@ -127,6 +130,7 @@ def test_external_handoff_restores_modes_before_callback_and_reenters(monkeypatc
     monkeypatch.setattr(module.sys, "stdin", SimpleNamespace(fileno=lambda: slave))
     monkeypatch.setattr(module.sys, "stdout", output)
     tui = TUI()
+    tui.set_title("Current task")
     entries = []
     loops = []
     callbacks = []
@@ -139,6 +143,7 @@ def test_external_handoff_restores_modes_before_callback_and_reenters(monkeypatc
         assert termios.tcgetattr(slave) == original
         assert not tui.is_running
         assert "\x1b[?2004l" in output.getvalue()
+        assert output.getvalue().count("\x1b[23;2t") == 1
         callbacks.append(True)
         import tty
         tty.setraw(slave)  # A broken external editor must not redefine shell defaults.
@@ -163,6 +168,8 @@ def test_external_handoff_restores_modes_before_callback_and_reenters(monkeypatc
             tui.start()
             assert len(entries) == 2
             assert entries[-1] == {"resumed": True, "external": True}
+        assert output.getvalue().count("\x1b[22;2t") == (1 if raises else 2)
+        assert output.getvalue().count("\x1b[23;2t") == (1 if raises else 2)
         assert callbacks == [True]
         assert termios.tcgetattr(slave) == original
         assert not tui.is_running
@@ -319,3 +326,25 @@ def test_resize_between_geometry_check_and_tick_paint_cannot_skip_cursor_reancho
     tui._input_loop(Reader(), TerminalProtocol())
     assert len(ticks) == 3 and anchors == [(36, 6)]
     assert '\x1b[3J' not in output.getvalue() and '\x1b[2J' not in output.getvalue()
+
+
+def test_window_title_is_deferred_bounded_safe_and_not_rewritten_each_tick(monkeypatch):
+    import xdog.tui.tui as module
+
+    output = io.StringIO()
+    monkeypatch.setattr(module.sys, 'stdout', output)
+    tui = TUI()
+    tui.set_title('修复 Eyes 恢复')
+    assert output.getvalue() == ''  # Construction must not take terminal ownership.
+    tui._running = True
+    tui._sync_title()
+    expected = '\x1b[22;2t\x1b]2;修复 Eyes 恢复\x1b\\'
+    assert output.getvalue() == expected
+    tui.set_title('修复 Eyes 恢复')
+    assert output.getvalue() == expected
+    tui.set_title('New title\x07\x1b\n\x9c' + 'x' * 1000)
+    assert output.getvalue().count('\x1b[22;2t') == 1
+    last = output.getvalue()[len(expected):]
+    assert last.startswith('\x1b]2;New title') and last.endswith('\x1b\\')
+    assert '\x07' not in last and '\n' not in last and '\x9c' not in last
+    assert len(tui._title) <= 256

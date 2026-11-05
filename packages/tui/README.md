@@ -67,6 +67,13 @@ reports), unlike the pure rendering example. `request_render()` schedules a fram
 Do not block ticks/input handlers on filesystem/network/model work. Workers should
 publish immutable events for the UI owner to apply; applications own their shutdown.
 
+`set_title(text)` requests a bounded plain window title on the UI thread; calls
+before `start()` are deferred and unchanged titles are not rewritten each tick.
+Control characters are removed. The TUI saves/restores the previous window title
+across normal/exceptional exit, suspend and external-editor handoff on terminals
+supporting title stacks. Terminal/multiplexer configuration can ignore these
+requests; title text is presentation only, never application state or authority.
+
 ### Import map
 
 Not all host-facing helpers are re-exported from the package root or

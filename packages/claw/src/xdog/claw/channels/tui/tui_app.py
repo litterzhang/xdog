@@ -3828,6 +3828,7 @@ class ChatApp:
     # ── Per-frame polling (matching OpenClaw's event loop) ──
 
     def _poll(self) -> None:
+        self._tui.set_title(self._state.get("session_name") or f"xdog-claw · {self._state.get('group_id', 'main')}")
         self._poll_parent_drafts()
         if self._finish_deferred_draft_quit():
             return
@@ -4004,6 +4005,20 @@ class ChatApp:
     def _handle_response(self, msg: Mapping[str, Any]) -> None:
         msg = thaw_event(msg)
         msg_type = msg.get("type")
+        if msg_type == 'session_name_updated':
+            if (not self._name_read_supported or msg.get('group_id') != self.group_id
+                    or msg.get('session_id') != self._gateway_session_id):
+                return
+            from xdog.agent.session_name import session_name
+            try:
+                name = session_name(msg.get('session_name'))
+                if name != msg.get('session_name'):
+                    return
+            except ValueError:
+                return
+            self._state['session_name'] = name
+            self._tui.request_render()
+            return
         if msg_type in {'extension_dialog', 'child_extension_dialog'}:
             question = msg.get('dialog')
             if not isinstance(question, dict) or not self._extension_stack.accepts(question, []):

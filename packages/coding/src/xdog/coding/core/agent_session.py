@@ -214,6 +214,8 @@ class AgentSession:
     _sdk_closing: Future[None] | None = field(default=None, init=False, repr=False)
     _retiring_leases: set[SessionLease] = field(default_factory=set, init=False, repr=False)
     _sdk_disposing: bool = field(default=False, init=False, repr=False)
+    _name_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    _retired_name_tasks: list[asyncio.Task[None]] = field(default_factory=list, init=False, repr=False)
     _close_receipt: Future[None] | None = field(default=None, init=False, repr=False)
     _resource_closing: Future[None] | None = field(default=None, init=False, repr=False)
     _retired_resources: list[tuple[CodingChildren, ExtensionRuntime, McpRegistry | None]] = field(
@@ -814,18 +816,22 @@ class AgentSession:
 
     @_idle_change
     def rename_session(self, name: str, *, expected_name: str | None = None,
-                       alive: Callable[[], bool] | None = None) -> str:
+                       alive: Callable[[], bool] | None = None, expected_revision: int | None = None) -> str:
         """Save metadata before publishing, retaining the data owner used by access/extensions."""
         from dataclasses import replace
 
-        from xdog.agent.session_name import session_name
+        from xdog.agent.session_name import name_revision, session_name
         selected = session_name(name)
+        if expected_revision is not None:
+            name_revision(expected_revision)
         if expected_name is not None and session_name(expected_name) != self.session_data.name:
             raise ValueError('Session name changed since review; inspect before retrying')
         self._children_idle()
         if self.agent.is_streaming:
             raise RuntimeError('Session naming requires an idle agent')
-        staged = replace(self.session_data, name=selected)
+        if expected_revision is not None and self.session_data.name_revision != expected_revision:
+            raise ValueError('Session name revision changed; automatic result discarded')
+        staged = replace(self.session_data, name=selected, name_revision=self.session_data.name_revision + 1)
         if not self._navigation_alive():
             raise asyncio.CancelledError
         def guard() -> None:
@@ -838,6 +844,10 @@ class AgentSession:
             guard()
             self.session_manager.save_session(staged, before_replace=guard)
         self.session_data.name = staged.name
+        self.session_data.name_revision = staged.name_revision
+        if expected_revision is None:
+            from xdog.coding.core.session_naming import cancel
+            cancel(self)
         self.session_data.updated_at = staged.updated_at
         return selected
 
@@ -892,6 +902,9 @@ class AgentSession:
             self.mcp.close()
 
     async def _settle_retired_resources(self) -> None:
+        from xdog.coding.core.session_naming import close as close_name
+        if self._retired_name_tasks:
+            await close_name(self)
         from functools import partial
 
         from xdog.agent.async_work import settle_cleanup
@@ -1046,6 +1059,7 @@ class AgentSession:
         self._user_prompt_messages.clear()
         self._authorized_messages.clear()
         history_started = False
+        name_ready = False
         try:
             self.handled_feedback = []
             await self.initialize_capabilities()
@@ -1106,6 +1120,7 @@ class AgentSession:
             self.agent.drain_handled_inputs()
             await self.extensions.event("turn_end")
 
+            name_ready = last_assistant is not None and last_assistant.stop_reason not in {'error', 'aborted'}
             return last_assistant
         finally:
             self._user_operation_authorized = False
@@ -1123,6 +1138,11 @@ class AgentSession:
                                      message='Coding turn finalization failed')
             finally:
                 self._expire_turn_scoped_skills()
+            if history_started and name_ready:
+                from xdog.coding.core.session_naming import start
+                prompt = next((item.raw_text if item.raw_text is not None else item.value.instruction
+                               for item, origin in zip(inputs, origins, strict=True) if origin == 'user'), '')
+                await start(self, prompt)
 
     def _expire_turn_scoped_skills(self) -> None:
         """Mirror SDK retirement; preparation failures do not consume pending skills."""
@@ -1426,6 +1446,8 @@ class AgentSession:
 
     def _activate_session(self, loaded: SessionData) -> bool:
         """Stage a complete target, then persist and publish it once under the idle owner."""
+        from xdog.coding.core.session_naming import cancel
+        cancel(self)
         directory = Path(loaded.working_dir).expanduser().resolve() if loaded.working_dir else self.working_dir
         if not directory.is_dir():
             raise ValueError("Saved session workspace is unavailable")

@@ -162,6 +162,7 @@ class GroupRuntime:
         self._session_last_active: float = 0.0
         self._session_prepare_lock = asyncio.Lock()
         self._source_revision = 0
+        self._retired_name_tasks: list[asyncio.Task[None]] = []
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
 
@@ -457,7 +458,8 @@ class GroupRuntime:
         return result
 
     def rename_session(self, expected_session: str, name: str,
-                       alive: Callable[[], bool] = lambda: True, *, expected_name: str | None = None) -> str:
+                       alive: Callable[[], bool] = lambda: True, *, expected_name: str | None = None,
+                       expected_revision: int | None = None) -> str:
         from xdog.agent.session_name import session_name
         selected = session_name(name)
         if self._active_session is not None:
@@ -469,9 +471,12 @@ class GroupRuntime:
         if not alive():
             raise asyncio.CancelledError
         meta = self.transcript_store.rename_session(self.group.id, expected_session, selected, alive,
-                                                     expected_name=expected_name)
+                                                     expected_name=expected_name, expected_revision=expected_revision)
         if self._active_session is not None:
             self._active_session._meta = meta
+            if expected_revision is None:
+                from xdog.claw.core.runtime.session_naming import cancel
+                cancel(self._active_session)
         return meta.label
 
 

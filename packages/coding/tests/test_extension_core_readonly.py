@@ -95,7 +95,8 @@ def session(tmp_path, names=(), settings=None):
     store = SessionManager(tmp_path / 'sessions')
     calls = []
     def stream(*args):
-        calls.append(args)
+        if not isinstance(args[1].system_prompt, str):  # Exclude tool-free title metadata.
+            calls.append(args)
         return EventStream.empty(AssistantMessage(content=(TextContent(text='RETAINED NATIVE RESPONSE'),)))
     parent = AgentSession(agent=Agent(stream,
                                       skills=SkillRepo().register(directory=tmp_path / 'skills', name="shared"),

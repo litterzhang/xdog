@@ -113,6 +113,7 @@ class GatewayServer:
         self._orchestrator: Orchestrator | None = None
         self._native_inputs: NativeInputReceipts | None = None
         self._input_unsubscribe: Callable[[], None] | None = None
+        self._name_unsubscribe: Callable[[], None] | None = None
         self._input_notices: set[asyncio.Task[None]] = set()
         self._application_capabilities: CapabilitySet | None = None
         self._client_tasks: set[asyncio.Task[Any]] = set()
@@ -178,6 +179,11 @@ class GatewayServer:
                     self._input_notices.add(task)
                     task.add_done_callback(self._input_notices.discard)
             self._input_unsubscribe = inputs.subscribe_completed(completed)
+            def named(group_id: str, session_id: str, _name: str) -> None:
+                task = asyncio.create_task(self._session_named(group_id, session_id))
+                self._input_notices.add(task)
+                task.add_done_callback(self._input_notices.discard)
+            self._name_unsubscribe = self._orchestrator.subscribe_session_names(named)
             # Await this owned connection before restoring overdue managed work.
             # Keep the existing ability to use TUI when WeChat is unavailable.
             self._failed_channels.clear()
@@ -291,6 +297,21 @@ class GatewayServer:
         self._client_tasks.add(task)
         task.add_done_callback(self._client_tasks.discard)
 
+    async def _session_named(self, group_id: str, session_id: str) -> None:
+        async def notify(write: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+            try:
+                if self._orchestrator is None:
+                    return
+                # Read at publication, not from a queued proposal: a manual rename
+                # may already have superseded the generated title.
+                value = await self._orchestrator.read_session_name(group_id, session_id)
+                await write({'type': 'session_name_updated', 'group_id': group_id,
+                             'session_id': session_id, 'session_name': value['session_name']})
+            except (ValueError, RuntimeError, OSError):
+                logger.debug('Optional session name notification unavailable')
+        await asyncio.gather(*(notify(write) for group, write, _ in tuple(self._input_viewers.values())
+                               if group == group_id), return_exceptions=True)
+
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                              client_id: int = 0) -> None:
         from xdog.claw.channels.tui.native_connection import NativeConnection
@@ -363,6 +384,9 @@ class GatewayServer:
     async def _stop(self) -> None:
         if self._orchestrator is not None:
             self._orchestrator.request_stop()
+        if self._name_unsubscribe is not None:
+            self._name_unsubscribe()
+            self._name_unsubscribe = None
         if self._input_unsubscribe is not None:
             self._input_unsubscribe()
             self._input_unsubscribe = None

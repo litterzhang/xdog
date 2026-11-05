@@ -55,6 +55,7 @@ class SessionMeta:
     last_active: str = ""
     turn_count: int = 0
     label: str = ""
+    name_revision: int = 0
 
 
 @dataclass

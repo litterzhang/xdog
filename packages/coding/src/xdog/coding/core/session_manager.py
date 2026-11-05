@@ -21,7 +21,7 @@ from xdog.agent.access import AccessState
 from xdog.agent.extensions.active_tools import names as active_tool_names
 from xdog.agent.extensions.compaction import saved_record
 from xdog.agent.extensions.state import validate_entries
-from xdog.agent.session_name import session_name
+from xdog.agent.session_name import name_revision, session_name
 from xdog.coding.config import get_sessions_dir
 from xdog.coding.core.defaults import SESSION_FILE_PREFIX, SESSION_FILE_SUFFIX
 from xdog.coding.core.messages import dicts_to_messages, messages_to_dicts
@@ -89,6 +89,7 @@ class SessionData:
     extension_entries: dict[str, Any] = field(default_factory=dict)
     compaction: dict[str, Any] | None = None
     name: str = ""
+    name_revision: int = 0
     active_tools: tuple[str, ...] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,6 +99,7 @@ class SessionData:
             "updated_at": self.updated_at,
             "summary": self.summary,
             "name": session_name(self.name),
+            "name_revision": name_revision(self.name_revision),
             "model": self.model,
             "working_dir": self.working_dir,
             "messages": messages_to_dicts(self.messages),
@@ -121,6 +123,7 @@ class SessionData:
             updated_at=data.get("updated_at", 0.0),
             summary=data.get("summary", ""),
             name=session_name(data.get("name", "")),
+            name_revision=name_revision(data.get("name_revision", 0)),
             model=data.get("model", ""),
             messages=dicts_to_messages(data.get("messages", [])),
             settings=data.get("settings", {}),

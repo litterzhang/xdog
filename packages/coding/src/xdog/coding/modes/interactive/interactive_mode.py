@@ -2873,6 +2873,7 @@ class InteractiveMode:
         return changed
 
     def _poll(self) -> None:
+        self._tui.set_title(self._session.session_data.name or "xdog-coding")
         """Poll the event queue and update the UI (called per frame)."""
         self._bind_child_approvals()
         self._poll_parent_drafts()

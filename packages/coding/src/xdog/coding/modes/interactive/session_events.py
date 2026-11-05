@@ -259,6 +259,9 @@ class NativeSessionEvents:
         if (self.runtime is None or event.generation != self.runtime.controller.generation
                 or event.session_id != self.ui._session.session_id):
             return
+        if event.kind == 'session_name':
+            self.ui._tui.request_render()
+            return
         if event.kind == 'inbox_error':
             self.ui._chat_log.add_system('Inbox refresh unavailable: ' + str(event.data))
             return
