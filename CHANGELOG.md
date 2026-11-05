@@ -8,6 +8,8 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.6.1] — 2026-11-05
+
 ### Added
 
 - Generate Coding and Claw session names once in the background after a successful
@@ -17,6 +19,22 @@ project follows [semantic versioning](https://semver.org/).
 - Show the current session name in the TUI terminal window title, with an unnamed
   application/group fallback and save/restore across exit and external editors
   on supporting terminals.
+
+### Changed
+
+- Retain 1,100 risk-driven pytest cases instead of 10,942; remove redundant matrices
+  and implementation-detail tests while preserving core workflows, permission and
+  owner boundaries, consistency and important regressions. Document accepted gaps.
+- Use one full-suite pytest invocation with at most two workers, and document a
+  minimal-test standard: independent risks, representative parameters, no coverage
+  quotas or collection/skip/loop shortcuts.
+
+### Fixed
+
+- Resume Coding sessions with unrelated metadata without interpreting or rejecting
+  retired planning fields. Access comes only from validated current fields; unknown
+  metadata cannot supply missing permissions. Claw no longer probes retired plan
+  files or rejects checkpoint metadata because of those field names.
 
 ## [2.6.0] — 2026-11-05
 
