@@ -136,3 +136,20 @@ source errors, ACP handler `ready`. Each source retains `gap=true` with the exac
 prior October 30 success watermark in its first coverage entry. This verifies
 current collection recovery, not a complete historical backfill, model execution
 or user-channel notification delivery.
+
+## CI owner-exit readiness follow-up
+
+CI run `41949093905` reached the full test suite after the public XHS dependency
+fix. One end-to-end assertion sampled `degraded` immediately after TUI owner exit;
+the other 572 Eyes tests passed. The assertion incorrectly required synchronous
+completion of the independent daemon's health RPC/reconnect. No runtime timeout
+or delivery/permission assertion was relaxed to address this.
+
+The end-to-end case now waits within its existing five-second readiness bound
+for actual `watching`, checks handler readiness and the original registration,
+then still requires the sixth callback to reach the offline Inbox without another
+model turn. A second deterministic case holds the ingress health RPC behind an
+async barrier, observes `degraded`, exits the owner, releases the barrier and
+requires automatic recovery. Cleanup releases the barrier even on failure.
+Readiness timeout diagnostics include the last real status rather than hiding it
+behind a bare timeout. All **13 end-to-end cases passed** locally (48.45 seconds).

@@ -16,9 +16,13 @@ async def wait_for(predicate):
 
 
 async def wait_for_state(control, identifier, state):
-    async with asyncio.timeout(5):
-        while (result := await control.status(identifier))['state'] != state:
-            await asyncio.sleep(0.01)
+    result = None
+    try:
+        async with asyncio.timeout(5):
+            while (result := await control.status(identifier))['state'] != state:
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        pytest.fail(f"Expected {identifier} to become {state}; last status: {result}")
     return result
 
 
@@ -113,13 +117,15 @@ async def test_file_to_acp_coding_turn_then_self_edit_is_automatically_consumed(
         await asyncio.wrap_future(owner.close())
 
 
+@pytest.mark.parametrize('delay_health', [False, True], ids=['ready', 'recovering-health'])
 async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survive_owner_exit(
-    tmp_path, observer_data, host_skill_repo, assert_host_goal_discoverable, eyes_control,
+    tmp_path, observer_data, host_skill_repo, assert_host_goal_discoverable, eyes_control, monkeypatch, delay_health,
 ):
     from xdog.agent import Agent, AgentConfig
     from xdog.ai.types import AssistantMessage, TextContent, UserMessage
     from xdog.ai.utils.event_stream import EventStream
     from xdog.coding.acp.ingress import IngressConfig, IngressServer
+    from xdog.coding.acp.ingress_backend import IngressBackend
     from xdog.coding.core.agent_session import AgentSession
     from xdog.coding.core.session_manager import SessionManager
     from xdog.coding.core.sessions.inbox_store import InboxStore
@@ -127,6 +133,17 @@ async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survi
     from xdog.coding.modes.interactive.interactive_mode import InteractiveMode
     from xdog.tui.utils import strip_ansi
 
+    health_release, health_entered = asyncio.Event(), asyncio.Event()
+    health_release.set()
+    original_extension = IngressBackend.extension
+
+    async def extension(backend, peer, method, params):
+        if method == 'xdog/inbox_status' and not health_release.is_set():
+            health_entered.set()
+            await health_release.wait()
+        return await original_extension(backend, peer, method, params)
+
+    monkeypatch.setattr(IngressBackend, 'extension', extension)
     (tmp_path/'src').mkdir()
     manager = SessionManager(tmp_path/'sessions')
     data = manager.create_session(model='test',working_dir=tmp_path)
@@ -180,10 +197,23 @@ async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survi
             SessionPresenter(replay).replay(session.runtime.controller.store.records(),tuple(saved.messages),rows)
             reopened = '\n'.join(strip_ansi(line) for line in replay.render(120))
             assert reopened.count('External input')==5 and reopened.count('OFFLINE-BATCH-ANSWER')==1
+            if delay_health:
+                # A busy receiver can time out a health RPC during owner shutdown.
+                # Exercise this window explicitly, without sleeps or blocking the loop.
+                health_release.clear()
+                await asyncio.wait_for(health_entered.wait(), 5)
+                degraded = await wait_for_state(control, identifier, 'degraded')
+                assert degraded['handler_health']['notify']['state'] == 'reconnecting'
             ui._request_exit()
             await asyncio.to_thread(ui._session_events.close)
             ui = None
-            assert ingress.server.is_serving() and (await control.status(identifier))['state']=='watching'
+            health_release.set()
+            assert ingress.server.is_serving()
+            # Owner exit does not synchronously settle the independent daemon's
+            # health RPC/reconnect. Require actual recovery, not degraded-or-ready.
+            recovered = await wait_for_state(control, identifier, 'watching')
+            assert recovered['registration_id'] == identifier and not recovered['error']
+            assert all(item['state'] == 'ready' for item in recovered['handler_health'].values())
             changed.write_text('after TUI exit')
             await wait_for(lambda:len(store.records(data.session_id,tmp_path))==6)
             assert len(turns)==1
@@ -199,6 +229,7 @@ async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survi
             assert len(store.records(data.session_id,tmp_path))==6 and ingress.server.is_serving()
             assert len(turns)==1
         finally:
+            health_release.set()
             if ui is not None:
                 ui._request_exit()
                 await asyncio.to_thread(ui._session_events.close)
