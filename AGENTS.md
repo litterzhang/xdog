@@ -117,6 +117,12 @@ fresh test results. Package-local Flow docs remain under `packages/flow/docs/`.
   data migration unless explicitly requested. Removing code is not permission
   to erase user data or reject valid optional fields in the current format.
 
+- Persisted host metadata readers validate the current fields they actually own
+  and ignore unrelated fields. Do not retain retired-field deny lists or probe
+  retired files merely to reject them: that is still obsolete-format handling.
+  Unknown data grants no authority; missing or invalid required access/identity
+  fields must still fail closed, without defaults or permission migration.
+
 ### Testing standard: minimal and risk-driven
 
 - Write as few tests as necessary to protect critical behavior. Keep the main suite

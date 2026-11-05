@@ -32,11 +32,15 @@ def test_changed_live_row_never_reuses_stale_stored_payload():
 
 
 def test_checkpoint_is_indexed_private_complete_and_create_only(tmp_path):
+    ignored = tmp_path / 'unrelated.plan.json'
+    ignored.write_bytes(b'not a supported record')
     store = TranscriptStore(tmp_path, owner_group='main')
+    assert ignored.read_bytes() == b'not a supported record'
     meta = store.create_session('main')
     original = messages_to_transcript([UserMessage(content='all original data'), AssistantMessage()])
     store.replace_transcript(meta.session_id, original)
-    metadata = {'label': 'Before compaction #1', 'recovery_kind': 'compaction', 'branch_point': 1}
+    metadata = {'label': 'Before compaction #1', 'recovery_kind': 'compaction', 'branch_point': 1,
+                'legacy_plan': None, 'plan': {'ignored': True}}
     store.save_compaction_checkpoint(meta.session_id, 'compaction-unique', original, metadata=metadata)
     reopened = TranscriptStore(tmp_path, owner_group='main')
     assert reopened.load_branch(meta.session_id, 'compaction-unique') == original

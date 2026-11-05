@@ -22,8 +22,8 @@ class AccessState:
 
     @classmethod
     def from_dict(cls, value: Any) -> AccessState:
-        if (not isinstance(value, dict) or set(value) != {'read_only', 'revision'}
-                or type(value['read_only']) is not bool or type(value['revision']) is not int
+        if (not isinstance(value, dict)
+                or type(value.get('read_only')) is not bool or type(value.get('revision')) is not int
                 or value['revision'] < 0):
             raise ValueError('Invalid saved access scope; refusing writable restore')
         return cls(value['read_only'], value['revision'])
@@ -31,8 +31,6 @@ class AccessState:
 
     @classmethod
     def saved(cls, record: dict[str, Any]) -> AccessState:
-        if {'plan', 'legacy_plan'} & record.keys():
-            raise ValueError('Retired planning records are unsupported; no permission migration')
         if 'access' not in record or record['access'] is None:
             raise ValueError('Missing saved access scope')
         return cls.from_dict(record['access'])

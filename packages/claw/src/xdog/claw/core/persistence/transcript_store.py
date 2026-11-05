@@ -42,7 +42,7 @@ class TranscriptStore:
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
         from xdog.claw.core.persistence.navigation_journal import recover
         self._navigation_recovery_required = False
-        recover(self._sessions_dir)  # Recover BEFORE reading catalogs, plans, entries, or exposing sessions.
+        recover(self._sessions_dir)  # Recover before reading catalogs or exposing sessions.
         self._index_file = self._sessions_dir / "sessions.json"
         self._lock = threading.RLock()
         self._owner_group = owner_group
@@ -61,8 +61,6 @@ class TranscriptStore:
             except (ValueError, OSError, UnicodeError):
                 self._extension_entries[path.name] = {"invalid_saved_entries": None}
         self._access: dict[str, Any] = {}
-        if any(self._sessions_dir.glob('*.plan.json')):
-            raise ValueError('Retired planning sidecars are unsupported; no permission migration')
         for path in self._sessions_dir.glob("*.access.json"):
             try:
                 if path.is_symlink() or not path.is_file() or path.stat().st_size > 512 * 1024:
@@ -628,8 +626,6 @@ class TranscriptStore:
             destination = self._path(session_id, branch_id)
             if not branch_id or destination.exists() or branch_id in self._catalog['branches'].get(session_id, {}):
                 raise ValueError('Compaction recovery checkpoint already exists; no overwrite')
-            if {'plan', 'legacy_plan'} & metadata.keys():
-                raise ValueError('Retired planning metadata is unsupported')
             access = (AccessState.saved(metadata).to_dict() if "access" in metadata
                       else self.get_access(session_id))
             selected = (names(metadata['active_tools']) if 'active_tools' in metadata
@@ -642,7 +638,7 @@ class TranscriptStore:
             catalog["branches"].setdefault(session_id, {})[branch_id] = {
                 "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "message_count": len(transcript), "parent_branch": self.active_branch(session_id),
-                **{key: value for key, value in metadata.items() if key not in {"plan", "access"}},
+                **{key: value for key, value in metadata.items() if key != "access"},
                 "access": access,
             }
             with transaction(self, {destination, tools_path, entries_path, access_path, self._catalog_file}):

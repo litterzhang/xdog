@@ -11,6 +11,9 @@ async def test_producer_receipt_prevents_automatic_turn_until_full_settlement(co
     controller.start()
     controller.human_input()
     try:
+        # Installed-provider cold IO is setup, not the producer-settlement contract.
+        await asyncio.wrap_future(controller.control(
+            coding_session.initialize_capabilities, name='prepare-installed-capabilities'))
         controller.hold_producer(operation)
         ticket = controller.submit(SessionInput('r1', 'acp', 'peer', 'Review', (), {}), peer_id='p1')
         await asyncio.wrap_future(ticket.accepted)

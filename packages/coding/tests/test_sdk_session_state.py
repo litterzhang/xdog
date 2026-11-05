@@ -82,3 +82,38 @@ def test_skill_repo_construction_failure_is_not_silently_downgraded(monkeypatch)
     with pytest.raises(OSError, match="skill catalog cannot be read") as raised:
         _coding_skill_repo()
     assert raised.value is error
+
+
+def test_resume_ignores_unknown_metadata_without_deriving_access_or_rewriting_history(tmp_path):
+    import json
+
+    from xdog.agent.access import AccessState
+    from xdog.ai.types import AssistantMessage, TextContent, UserMessage
+    from xdog.coding.core.session_manager import SessionManager, SessionUnavailable
+
+    manager = SessionManager(tmp_path / "sessions")
+    saved = manager.create_session(model="offline/model", working_dir=tmp_path)
+    saved.messages = [UserMessage(content=(TextContent(text="Keep the original request"),)),
+                      AssistantMessage(content=(TextContent(text="Keep the original reply"),))]
+    current_access = AccessState(read_only=True, revision=3)
+    saved.access = current_access.to_dict()
+    snapshot = saved.to_dict()
+    snapshot.update(legacy_plan=None, plan={"mode": "not-authority"}, unrelated={"future": True})
+    snapshot['access']['future_metadata'] = 'ignored'
+    path = manager._session_path(saved.session_id)
+    path.write_text(json.dumps(snapshot))
+    original = path.read_bytes()
+    resumed = manager.load_session(saved.session_id)
+    assert resumed is not None and resumed.messages == saved.messages
+    assert resumed.access == current_access.to_dict() and path.read_bytes() == original
+    assert 'plan' not in resumed.to_dict() and 'legacy_plan' not in resumed.to_dict()
+    # Unknown metadata never supplies missing current permission state.
+    del snapshot['access']
+    path.write_text(json.dumps(snapshot))
+    with pytest.raises(SessionUnavailable) as rejected:
+        manager.load_session(saved.session_id)
+    assert 'Missing saved access scope' in str(rejected.value.__cause__)
+    assert AccessState.saved(
+        {'access': current_access.to_dict(), 'legacy_plan': {'read_only': False}}) == current_access
+    with pytest.raises(ValueError, match='Invalid saved access'):
+        AccessState.saved({'access': {'read_only': 'false', 'revision': 0}, 'future': True})

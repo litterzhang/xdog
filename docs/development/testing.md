@@ -81,19 +81,20 @@ compile 或历史报告推断。临时目录较大时可设置 `TMPDIR=/var/tmp`
 以 `acbe424` 为精简前基线。计数来自同一个根配置下
 `uv run pytest -c pyproject.toml --collect-only -n 0 -q` 的**参数化展开后**节点；
 不是文件数或测试函数数。没有更改 testpaths、文件匹配规则、收集插件或排除目录。
+原始精简保留 1,099 cases；2.6.1 新增一条真实 session 恢复回归，当前为 1,100。
 
 | 包 | 精简前 | 保留 |
 | --- | ---: | ---: |
 | agent | 2,239 | 179 |
 | ai | 777 | 100 |
 | claw | 2,257 | 166 |
-| coding | 2,621 | 165 |
+| coding | 2,621 | 166 |
 | eyes | 574 | 131 |
 | flow | 892 | 154 |
 | site | 64 | 11 |
 | skills | 702 | 94 |
 | tui | 816 | 99 |
-| **总计** | **10,942** | **1,099** |
+| **总计** | **10,942** | **1,100** |
 
 ### 保留的风险，而不是覆盖率目标
 
@@ -140,7 +141,7 @@ compile 或历史报告推断。临时目录较大时可设置 `TMPDIR=/var/tmp`
 
 ```bash
 TMPDIR=/var/tmp TERM=xterm-256color uv run python scripts/test.py
-# 1099 passed in 163.44s (0:02:43); 0 skipped, 0 xfailed, 0 warnings
+# 1100 passed in 151.70s (0:02:31); 0 skipped, 0 xfailed, 0 warnings
 
 uv run ruff check packages test_support scripts/test.py
 # All checks passed!
@@ -150,5 +151,7 @@ git diff --check
 
 最终保留套件完整执行，不是增量/定向结果；同一时间只有这一套全量测试、两个 pytest
 worker。AST 比较确认保留测试的 assert 未改变，没有增加 for/while 来承接删除的参数化；
-宿主/模型/第三方平台未执行线上验证。所有 `packages/*/src/` 与基线相同；额外改动仅为
-测试入口并发、失效测试 lint 例外及相关文档。精简改动未提交或推送。
+宿主/模型/第三方平台未执行线上验证。精简提交 `84f9de4` 没有生产源码改动；2.6.1
+另修复未知 host metadata 导致的 session 恢复误拒绝，并新增该条回归。已将安装能力的
+冷启动移到两条 receipt 测试的 setup，避免把无关启动 IO 算进两到三秒的结算期限；没有
+提高超时或放宽结算断言。

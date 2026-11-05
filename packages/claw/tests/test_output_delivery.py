@@ -31,6 +31,11 @@ async def test_ack_loss_keeps_actual_success_and_history_without_duplicate_send(
     api.send_message = ack_lost
     offered = text(1, "alice", "original")
     try:
+        # Delivery receipts have a short deadline; prepare unrelated cold IO first.
+        async with orch.group_controller("main").operation():
+            runtime = orch._runtimes["main"]
+            await runtime.prepare_session(allow_reset=False)
+            await runtime.initialize_capabilities(await orch.input_service())
         await channel._accept_inbound(offered)
         inputs = await orch.input_service()
         scope = InputScope("main", tmp_path)
