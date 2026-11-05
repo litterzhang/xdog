@@ -32,7 +32,8 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-      - run: uv sync
+      # Exercise the optional SDK contract without downloading/starting a browser.
+      - run: uv sync --locked --all-packages --extra xhs
 
       # The cheapest possible check, and the one that was missing: every
       # distribution we upload must at least import. `ruff` cannot catch a

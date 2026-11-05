@@ -62,7 +62,8 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
-      - run: uv sync
+      # Exercise the optional SDK contract without downloading/starting a browser.
+      - run: uv sync --locked --all-packages --extra xhs
       - run: uv run python scripts/test.py
       - run: uv run ruff check packages
       - run: uv run mypy --strict -p xdog.flow -p xdog.skills -p xdog.eyes

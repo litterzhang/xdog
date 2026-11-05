@@ -278,8 +278,9 @@ tools there. Domain imports must not mutate a process-global tool registry;
 Agent builtin tool instances are supplied by the SDK, not registered again by Claw.
 
 XHS uses the optional `xdog-claw[xhs]` Python dependency with the modified
-`xiaohongshu-cli[browser]==0.6.4+xdog.1` fork. The root uv source currently selects
-its editable sibling checkout; publish/pin an accessible fork before CI/release.
+`xiaohongshu-cli[browser]==0.6.4+xdog.1` fork. The root uv source pins the public `litterzhang/xiaohongshu-cli` fork at an
+immutable Git commit; no sibling checkout is required. This downstream version
+is not on PyPI: standalone extra installs must explicitly supply the pinned fork.
 There is no standalone HTTP backend. SDK adapter/login remain under channels/xhs;
 imports are lazy, credentials group-scoped, calls owned off-loop and writes single-attempt.
 Explicit QR login uses the public qrcode_login result in a short-lived same-env

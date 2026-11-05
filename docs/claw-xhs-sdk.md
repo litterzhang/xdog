@@ -3,12 +3,24 @@
 ## 当前依赖与发布边界
 
 Claw 的 xhs/all extras 使用 `xiaohongshu-cli[browser]==0.6.4+xdog.1`。
-本地 CLI 位于旁边的 `../xiaohongshu-cli`，root uv.sources 通过相对路径 editable 接入。
-独立版本号防止 PyPI 上旧的 0.6.4 被误认为支持新公开接口；wheel 不包含本机绝对路径。
+根目录 `tool.uv.sources` 固定到公开 fork：
 
-**这不是已发布的远端依赖。** 当前开发机器可以使用，但只克隆 xdog 的 CI/其他机器缺少
-兄弟仓库时不能解析该源码依赖。发布/推送前必须先发布改造 CLI，或换成可访问 fork 的
-固定 Git 提交；不能将本地路径配置当作已完成的发布方案。本次不擅自创建远端仓库或推送。
+```toml
+xiaohongshu-cli = { git = "https://github.com/litterzhang/xiaohongshu-cli.git", rev = "dc38b54b46087c705384e160f63ea0e1f823e16c" }
+```
+
+独立检出只需这个仓库，不依赖 `../xiaohongshu-cli` 或任何本机 editable 路径。
+上游浏览器改造 PR：`jackwener/xiaohongshu-cli#89`；上游 PR 不含 XDOG 版本号。
+固定提交位于 fork 的 `xdog` 分支，但安装按完整提交哈希，不跟踪可变分支。
+
+**发布边界：** `0.6.4+xdog.1` 尚未上传 PyPI，不能声称单独从 PyPI 安装
+`xdog-claw[xhs]` 就能获取它。仓库安装由 uv 固定源码；安装独立 Claw wheel 时也须
+显式提供相同 fork（不允许回落到缺少新 API 的上游 `0.6.4`）：
+
+```bash
+uv pip install 'xiaohongshu-cli[browser] @ git+https://github.com/litterzhang/xiaohongshu-cli.git@dc38b54b46087c705384e160f63ea0e1f823e16c'
+# 在同一环境安装需要的 Claw wheel / xhs extra。
+```
 
 ## 使用
 
@@ -70,10 +82,10 @@ SDK 许可证及浏览器，避免登录时才发现环境缺失。人类行为�
 
 ## 本次本地验证
 
-- 实际环境已安装 `xiaohongshu-cli==0.6.4+xdog.1`，模块来源为兄弟仓库；
+- `xiaohongshu-cli==0.6.4+xdog.1` 固定到公开 Git 提交，不再依赖兄弟仓库；
   CloakBrowser 0.7.0 已安装，未激活许可证或下载/启动其浏览器。
 - Claw 完整回归：2,218 passed。XHS/打包定向回归：75 passed。包含真实子进程读取调用方测试许可证缓存，确认不把
   许可证复制到候选 HOME；该测试不做许可证激活或网络请求。
 - 兄弟 CLI 回归：147 passed、11 platform smoke deselected。
 - 全仓 Ruff、九包严格 mypy（687 source files）、冻结离线 lock 校验及 diff whitespace 通过。
-- 当前没有远端 fork/发行版，故不宣称 standalone checkout/CI/发布依赖已可用。
+- 公开 fork 已可用于独立检出；PyPI 上尚无该下游发行版，独立 wheel 使用者仍须显式提供 Git 依赖。

@@ -31,8 +31,9 @@ project follows [semantic versioning](https://semver.org/).
 - Switch local Claw XHS development to the modified CLI's public QR result API
   and Python CloakBrowser (`headless=False`, `humanize=True`). Remove private SDK
   helpers and virtual-display hosting; retain the caller's prepared vendor cache
-  while isolating group credentials. The unpublished sibling dependency needs a
-  portable fork publication/pin before CI/release.
+  while isolating group credentials. Pin the public browser-integration fork to an
+  immutable Git commit instead of a machine-local editable sibling dependency;
+  exercise the optional SDK in CI. The downstream package is not published to PyPI.
 - Remove retired XHS backend URL/token settings, manual scan confirmation and PNG
   renderer branches. No old credentials are imported and no external service is started.
 

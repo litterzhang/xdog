@@ -25,6 +25,20 @@ def _toml(path):
     return tomllib.loads((REPO / path).read_text())
 
 
+def test_workspace_xhs_source_is_public_immutable_and_matches_lock():
+    source = _toml("pyproject.toml")["tool"]["uv"]["sources"]["xiaohongshu-cli"]
+    assert source["git"] == "https://github.com/litterzhang/xiaohongshu-cli.git"
+    assert re.fullmatch(r"[0-9a-f]{40}", source["rev"])
+    assert set(source) == {"git", "rev"}  # No local checkout, mutable branch or tag.
+    lock = _toml("uv.lock")
+    package, = [item for item in lock["package"] if item["name"] == "xiaohongshu-cli"]
+    assert package["version"] == "0.6.4+xdog.1"
+    assert package["source"]["git"] == f'{source["git"]}?rev={source["rev"]}#{source["rev"]}'
+    for spec in _toml("pyproject.toml")["tool"]["uv"]["sources"].values():
+        if "path" in spec:
+            assert (REPO / spec["path"]).resolve().is_relative_to(REPO)
+
+
 def test_claw_optional_eyes_and_eyes_owns_bounded_croniter():
     claw = _toml("packages/claw/pyproject.toml")["project"]
     eyes = _toml("packages/eyes/pyproject.toml")["project"]

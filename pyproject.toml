@@ -89,8 +89,8 @@ members = [
 ]
 
 [tool.uv.sources]
-# Local development fork; publish/pin an accessible fork before distributing this dependency.
-xiaohongshu-cli = { path = "../xiaohongshu-cli", editable = true }
+# Browser integration snapshot; immutable public source, no sibling checkout required.
+xiaohongshu-cli = { git = "https://github.com/litterzhang/xiaohongshu-cli.git", rev = "dc38b54b46087c705384e160f63ea0e1f823e16c" }
 xdog-ai = { workspace = true }
 xdog-agent = { workspace = true }
 xdog-flow = { workspace = true }

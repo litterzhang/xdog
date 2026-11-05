@@ -240,7 +240,7 @@ The optional `xhs` channel uses the Python `xiaohongshu-cli` SDK (pinned to
 ownership stay inside Claw; the SDK is installed only with the `xhs` extra:
 
 ```bash
-# Local development: ../xiaohongshu-cli must contain the modified fork.
+# The workspace pins the public fork at an immutable Git commit.
 uv sync --all-packages --extra xhs
 # Prepare CloakBrowser in the caller's normal HOME (not a group cookie directory):
 uv run --package xdog-claw --extra xhs cloakbrowser login
@@ -276,11 +276,12 @@ are inherited privately, never placed on argv or in account metadata. The vendor
 may download/update its managed browser during explicit login; prepare it first.
 Gateway startup/polling never performs interactive browser login.
 
-This unpublished fork has a distinct local version so the old PyPI package cannot
-silently satisfy it. The root uv source is the relative editable sibling checkout,
-not an absolute path in wheel metadata. **A standalone checkout/CI/release is not
-portable until the fork is published or replaced with an accessible pinned Git
-source.** Do not publish this development dependency as if it were on PyPI.
+This fork has a distinct downstream version so the old PyPI package cannot
+silently satisfy it. The root uv source is a public fork pinned to a full Git commit,
+not an absolute path in wheel metadata. A standalone workspace checkout no longer
+needs a sibling repository. **The downstream version is not on PyPI**: a standalone
+Claw wheel/extra install must explicitly supply the same pinned Git dependency;
+see `docs/claw-xhs-sdk.md`. Never silently replace it with upstream PyPI `0.6.4`.
 
 Candidate cookies are independently verified before publication; a failed scan or
 verification retains the existing credentials and binding. A host-local lease
