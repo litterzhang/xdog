@@ -8,6 +8,18 @@ project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-11-05
+
+### Changed
+
+- Consolidate maintained documentation by topic and archive dated plans, audits
+  and verification without presenting them as current contracts or fresh results.
+  Update package/site references and add explicit documentation and development
+  standards for ownership, dependency direction and core/domain separation.
+- Remove repository-local personal workflows, auto-enrich scaffolding, retired UI
+  checklist scripts and unused design/generated images. Keep shared test support
+  and installed-artifact verification tools.
+
 ### Fixed
 
 - Resume bounded GitHub collection after long observation gaps or clock regression

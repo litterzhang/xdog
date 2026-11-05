@@ -46,12 +46,91 @@ uv run xdog-site              # documentation/demo site
 uv run xdog-eyes --help       # observation CLI
 ```
 
-## Documentation
+## Documentation standards
 
 Current guides start at `docs/README.md` and `docs/architecture.md`. Topic guides
 are maintained directly; dated plans/audits/acceptance records live in `docs/archive/`.
 Archive records are historical evidence, not current interfaces, authorization or
 fresh test results. Package-local Flow docs remain under `packages/flow/docs/`.
+
+- Give each subject one maintained source of truth. Update or merge its existing
+  guide instead of creating another design/plan/requirements/verification cluster
+  for every change. Add an archive record only when dated decisions or evidence
+  genuinely need preservation; label its scope and superseded behavior explicitly.
+- Package READMEs explain installation and public use; topic guides explain design,
+  contracts and maintenance. Keep the root README and site descriptions consistent
+  with those sources, linking to details rather than copying evolving contracts.
+  Check a package's configured README when changing its PyPI-facing introduction.
+- Document the implemented contract: ownership, inputs/outputs, lifecycle, errors,
+  permission and recovery limits. Clearly separate supported behavior, proposals,
+  historical behavior and unverified environments. Examples must use current APIs;
+  never describe permission gates as a sandbox or intake ACKs as execution success.
+- Update affected docs, examples and entry points with the code change. When moving
+  or merging docs, update the index, relative links, anchors, package/site references
+  and source citations; do not retain forwarding files for retired document paths.
+  Preserve historical results without relabeling them as fresh verification.
+- Keep generated images, local experiments, logs and temporary validation output
+  out of the repository unless they are deliberate maintained assets or fixtures.
+  Do not record credentials, private conversations or machine-local installation
+  assumptions as reusable setup instructions.
+
+## Development standards
+
+### Design boundaries before implementation
+
+- Inspect the real code and existing contracts first. For a cross-layer change,
+  identify responsibility, authoritative state, dependency direction, public data
+  contract, effects and lifecycle owner before editing. Explain the boundary in the
+  existing topic guide when it changes; do not substitute a speculative framework.
+- Separate reusable technical core from application/domain policy and concrete IO
+  adapters. Shared execution code must not implement channel/provider-specific
+  behavior or optional feature/business schemas; dispatch through declared
+  registries/adapters and keep semantics in the owning layer. A package may own
+  its domain model, but shared SDK code must not learn that domain just to wire it
+  into a host.
+- Compose concrete implementations at the application boundary. For example,
+  Agent owns the reusable loop/repos/MCP protocol; hosts own permissions and actual
+  execution resources; Goal owns target/task rules; Eyes owns observation/delivery;
+  channel adapters own platform-specific schemas and IO. Do not move those policies
+  into Agent, a generic controller, or a shared transport to make integration easier.
+- Cross boundaries through narrow, typed contracts and explicit dependencies, not
+  raw application/session objects, service locators, import side effects or mutable
+  global registries. Avoid circular imports, cross-package private implementation
+  imports and wrappers that only preserve an obsolete name.
+
+### Keep implementation small and ownership explicit
+
+- Reuse the existing SDK, execution loop, repositories, capability discovery and
+  lifecycle mechanisms. Do not add a parallel tool/skill loader, event bus, queue,
+  scheduler or state store for a feature already covered by an existing owner.
+  Add abstractions only for an actual shared contract, not hypothetical reuse.
+- Keep one authority for each fact. UI, caches and status summaries are projections,
+  never a second task state, execution owner or source of permission. Use immutable,
+  bounded data across async/process boundaries; saved data cannot restore handles,
+  load code or grant authority.
+- Make startup, cancellation, close and failure settlement explicit for the original
+  resource owner. Keep blocking IO off async loops. Distinguish durable acceptance,
+  actual execution, history commit and external delivery; do not auto-replay unknown
+  effects, hide unavailable facts behind empty results, or relax gates for a feature.
+- Remove replaced interfaces, dead branches and their stale callers/tests/docs in
+  the same change; do not add aliases/fallbacks for retired contracts or silent
+  data migration unless explicitly requested. Removing code is not permission
+  to erase user data or reject valid optional fields in the current format.
+
+### Verify behavior, not just structure
+
+- Add deterministic regressions at the layer that owns the behavior and a small
+  number of real integration checks at changed boundaries. Prefer events/barriers
+  and actual receipts over sleeps, retries or assertions about implementation text.
+  Never weaken permissions, failure assertions or timeouts just to obtain green CI.
+- Run relevant tests first; cross-package/runtime changes need the full configured
+  suite, Ruff and strict mypy. Flow behavior changes also need example/codegen parity
+  checks; dependency, packaging or resource changes need actual wheel/sdist checks
+  and appropriate clean-install probes. Documentation-only changes need reference
+  and example checks, not a claim that the entire runtime was retested.
+- Report exactly what ran, what failed or was skipped, and which live/remote effects
+  were verified. A mocked transport, source import or triggered CI/publish run is
+  not proof of real platform delivery, installed-artifact behavior or release success.
 
 ## Architecture
 

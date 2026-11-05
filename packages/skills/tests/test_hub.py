@@ -75,10 +75,10 @@ def test_hub_distribution_is_a_default_host_dependency_without_retired_extras():
     assert config_path.is_file(), 'The common skills hub must be its own workspace distribution'
     config = tomllib.loads(config_path.read_text())
     assert config['project']['name'] == 'xdog-skills'
-    assert config['project']['dependencies'] == ['xdog-agent>=2.5.0']
+    assert config['project']['dependencies'] == ['xdog-agent>=2.6.0']
     for host in ('claw', 'coding'):
         config = tomllib.loads((repository / 'packages' / host / 'pyproject.toml').read_text())
-        assert 'xdog-skills>=2.5.0' in config['project']['dependencies']
+        assert 'xdog-skills>=2.6.0' in config['project']['dependencies']
         extras = config['project'].get('optional-dependencies', {})
         assert 'skills' not in extras and 'goals' not in extras
 

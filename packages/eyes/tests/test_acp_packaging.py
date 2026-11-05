@@ -90,7 +90,7 @@ def changed_wheel(artifacts, target, *, requirements=None, drop='', extra='', ve
 def test_shared_artifact_policy_rejects_dependency_drift(artifacts, tmp_path, policy, change):
     requirements = sorted(policy['APPROVED_REQUIREMENTS'])
     if change == 'extra':
-        requirements.append('xdog-agent>=2.5.0')
+        requirements.append('xdog-agent>=2.6.0')
     elif change == 'missing':
         requirements.remove('httpx<1,>=0.27')
     elif change == 'unbounded':

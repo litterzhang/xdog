@@ -77,7 +77,7 @@ class AcpAdapter(SdkAgent):
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "agentCapabilities": AgentCapabilities(load_session=True),
-                "agentInfo": Implementation(name="xdog-agent", version="2.5.0"),
+                "agentInfo": Implementation(name="xdog-agent", version="2.6.0"),
                 "_meta": {"xdog": {"extensions": self.backend.extensions}},
             }
         )
