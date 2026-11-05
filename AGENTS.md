@@ -620,7 +620,8 @@ not current lifecycle/API instructions or proof of a new verification run.
   or unversioned snapshots are rejected, with no silent migration/replay. External
   module versions and checkpoint provenance remain host responsibilities.
 
-- Current SDK snapshots accept only canonical versioned fields. No unversioned
+- Current SDK snapshots restore only canonical versioned fields; unrelated
+  top-level metadata is ignored, never used as aliases for prompt/options/authority. No unversioned
   partial restore, duplicate prompt/options aliases or historical external-event
   codec is provided. Flow real/stub/codegen inheritance uses the same snapshot
   contract. Old files are not migrated or rewritten. Native generation requires
@@ -628,12 +629,15 @@ not current lifecycle/API instructions or proof of a new verification run.
 
 - Retired application interfaces have no aliases: Claw uses TranscriptStore;
   Coding has no per-session bash handle, old keybinding manager or singleton
-  execution wrapper. Both new and saved ChildConfig use the same schema; old
-  instructions/budget/inheritance fields and snapshot-less child continuation
-  are rejected. Access state requires explicit current fields, with no plan codec.
-- Coding Inbox uses current version-3 records only, without legacy_order or old
-  approval-state migration. Both hosts reject missing execution metadata; Claw
-  never ALTERs an older input schema or reconstructs a missing session catalog.
+  execution wrapper. Both new and saved ChildConfig validate current fields; unknown metadata is
+  ignored, never converted into instructions, permissions or execution controls.
+  Snapshot-less child continuation is rejected. Access state requires explicit current fields, with no plan codec.
+- Coding Inbox validates current identity/status/owner/attempt fields, ignoring
+  unrelated metadata rather than rejecting a record by its version label. No old
+  approval-state migration is provided. Executable inputs require current owner/attempt facts;
+  optional observations in non-executable history remain unknown when unrecorded,
+  never fabricated ordering/timestamps or replay authority. Claw never ALTERs an
+  older input schema or reconstructs a missing session catalog.
   Goal requires current core fields, preserving optional question metadata as
   absent when unrecorded, without wait(host) or legacy-store
   probes. These failures never grant authority, run models or replay effects.

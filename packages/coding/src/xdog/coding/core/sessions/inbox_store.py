@@ -128,9 +128,8 @@ class InboxStore:
                     if os.path.exists(name):
                         os.unlink(name)
             value = _read(path, 4096)
-            if (not isinstance(value, dict) or set(value) != {'version', 'id'}
-                    or type(value['version']) is not int or value['version'] != 1
-                    or not isinstance(value['id'], str) or re.fullmatch(r'[0-9a-f]{32}', value['id']) is None):
+            if (not isinstance(value, dict) or not isinstance(value.get('id'), str)
+                    or re.fullmatch(r'[0-9a-f]{32}', value['id']) is None):
                 raise ValueError('Invalid durable inbox namespace')
             _sync_file(path)
             return hashlib.sha256((value['id'] + '\0' + session_id).encode()).hexdigest()

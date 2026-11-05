@@ -76,9 +76,12 @@ class ChildConfig:
 
     @classmethod
     def from_dict(cls, value: Any) -> ChildConfig:
-        if not isinstance(value, dict) or set(value) - set(cls().to_dict()):
-            raise ValueError("Unknown/invalid child configuration fields")
-        merged = {**cls().to_dict(), **value}
+        if not isinstance(value, dict):
+            raise ValueError("Child configuration must be an object")
+        # Read current fields only; unrelated saved metadata is neither an alias
+        # for instructions nor a source of tool authority.
+        defaults = cls().to_dict()
+        merged = {name: value.get(name, default) for name, default in defaults.items()}
         for name, limit in (("label", 120), ("system_prompt", 16000)):
             text = merged[name]
             if (not isinstance(text, str) or len(text.encode("utf-8")) > limit

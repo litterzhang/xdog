@@ -81,20 +81,21 @@ compile 或历史报告推断。临时目录较大时可设置 `TMPDIR=/var/tmp`
 以 `acbe424` 为精简前基线。计数来自同一个根配置下
 `uv run pytest -c pyproject.toml --collect-only -n 0 -q` 的**参数化展开后**节点；
 不是文件数或测试函数数。没有更改 testpaths、文件匹配规则、收集插件或排除目录。
-原始精简保留 1,099 cases；2.6.1 新增一条真实 session 恢复回归，当前为 1,100。
+原始精简保留 1,099 cases；后续新增 session 恢复、fullscreen 帧稳定性及
+Coding/Claw 本地命令显示的关键回归，当前为 1,103。模型检查回归并入已有测试。
 
 | 包 | 精简前 | 保留 |
 | --- | ---: | ---: |
 | agent | 2,239 | 179 |
 | ai | 777 | 100 |
-| claw | 2,257 | 166 |
-| coding | 2,621 | 166 |
+| claw | 2,257 | 167 |
+| coding | 2,621 | 167 |
 | eyes | 574 | 131 |
 | flow | 892 | 154 |
 | site | 64 | 11 |
 | skills | 702 | 94 |
-| tui | 816 | 99 |
-| **总计** | **10,942** | **1,100** |
+| tui | 816 | 100 |
+| **总计** | **10,942** | **1,103** |
 
 ### 保留的风险，而不是覆盖率目标
 
@@ -141,7 +142,7 @@ compile 或历史报告推断。临时目录较大时可设置 `TMPDIR=/var/tmp`
 
 ```bash
 TMPDIR=/var/tmp TERM=xterm-256color uv run python scripts/test.py
-# 1100 passed in 151.70s (0:02:31); 0 skipped, 0 xfailed, 0 warnings
+# 1103 passed in 149.15s (0:02:29); 0 skipped, 0 xfailed, 0 warnings
 
 uv run ruff check packages test_support scripts/test.py
 # All checks passed!
@@ -152,6 +153,7 @@ git diff --check
 最终保留套件完整执行，不是增量/定向结果；同一时间只有这一套全量测试、两个 pytest
 worker。AST 比较确认保留测试的 assert 未改变，没有增加 for/while 来承接删除的参数化；
 宿主/模型/第三方平台未执行线上验证。精简提交 `84f9de4` 没有生产源码改动；2.6.1
-另修复未知 host metadata 导致的 session 恢复误拒绝，并新增该条回归。已将安装能力的
+另修复未知 host metadata 以及未记录的输入历史观测字段导致的 session 恢复误拒绝，
+以同一条完整恢复回归覆盖。已将安装能力的
 冷启动移到两条 receipt 测试的 setup，避免把无关启动 IO 算进两到三秒的结算期限；没有
 提高超时或放宽结算断言。

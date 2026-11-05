@@ -36,6 +36,7 @@ def test_resume_restores_thinking_and_provider_context_window(tmp_path, monkeypa
         reasoning=True,
         context_window=128_000,
         max_prompt_tokens=120_000,
+        supported_efforts=("low", "medium", "high", "xhigh", "max"),
     )
     provider = _Provider(model)
     monkeypatch.setenv("CODING_DIR", str(tmp_path / "coding-data"))
@@ -55,6 +56,14 @@ def test_resume_restores_thinking_and_provider_context_window(tmp_path, monkeypa
     assert created.session.context_window == 128_000
     assert created.session.max_prompt_tokens == 120_000
     assert created.session.context_limit == 120_000
+    info = created.session.session_info()
+    assert info["model"]["supported_efforts"] == list(model.supported_efforts)
+    assert info["model"]["thinking"] == "xhigh"
+    from xdog.agent.extensions.inspection import validate
+    with pytest.raises(ValueError, match="supported_efforts capability list"):
+        validate("model", {**info["model"], "supported_efforts": ["max", "max"]})
+    with pytest.raises(ValueError, match="thinking level"):
+        validate("model", {**info["model"], "thinking": "max"})
 
     with pytest.raises(RuntimeError, match="owned"):
         create_agent_session(CreateSessionOptions(working_dir=tmp_path, resume_id=session_id))
@@ -107,6 +116,65 @@ def test_resume_ignores_unknown_metadata_without_deriving_access_or_rewriting_hi
     assert resumed is not None and resumed.messages == saved.messages
     assert resumed.access == current_access.to_dict() and path.read_bytes() == original
     assert 'plan' not in resumed.to_dict() and 'legacy_plan' not in resumed.to_dict()
+    # The same resume path also reads the separate input ledger. Unrecorded
+    # execution observations are not an order, timestamp or executable replay queue.
+    from xdog.agent.session_input import SessionInput, input_data
+    from xdog.coding.core.sessions.store import InputStore
+
+    history = manager.input_history_path(saved.session_id)
+    record = {'input': input_data(SessionInput('already-done', 'human', 'coding', 'Done', (), {})),
+              'branch_id': '', 'generation': 'original', 'status': 'succeeded', 'error': '',
+              'batch_id': 'original-batch', 'future_metadata': {'ignored': True}}
+    history.write_text(json.dumps([record]))
+    history.chmod(0o600)
+    original_history = history.read_bytes()
+    facts = InputStore.read_records(history)
+    assert len(facts) == 1 and facts[0].status == 'succeeded'
+    assert facts[0].start_order is None and facts[0].started_at is None and facts[0].settled_at is None
+    assert InputStore.latest_execution(history, '') is None
+    assert history.read_bytes() == original_history
+    # Partial, contradictory observations still cannot manufacture an execution.
+    record['started_at'] = 1.0
+    history.write_text(json.dumps([record]))
+    with pytest.raises(ValueError, match='Invalid input execution metadata'):
+        InputStore.read_records(history)
+    # Completed durable inbox receipts are data, not a replay queue. Read the
+    # current owner/attempt facts, independent of unrelated version/extra metadata.
+    from xdog.coding.core.sessions.inbox_models import InboxMessage
+    from xdog.coding.core.sessions.inbox_store import InboxStore
+
+    inbox = InboxStore(manager._dir, tmp_path / 'inbox')
+    message = InboxMessage(saved.session_id, tmp_path, 'completed', 'Already done', (), 'source', {})
+    namespace = inbox.scope_id(saved.session_id, tmp_path)
+    namespace_path = inbox.root / '.store-id'
+    namespace_data = json.loads(namespace_path.read_bytes())
+    namespace_data.update(version=999, future_metadata=True)
+    namespace_path.write_text(json.dumps(namespace_data))
+    original_namespace = namespace_path.read_bytes()
+    assert inbox.scope_id(saved.session_id, tmp_path) == namespace
+    assert namespace_path.read_bytes() == original_namespace
+    inbox.enqueue(message)
+    reserved = inbox.reserve(saved.session_id, ('completed',), cwd=tmp_path, branch_id='', generation='original')
+    inbox.begin_batch(saved.session_id, reserved, generation='original', batch_id='completed-batch')
+    inbox.finish(saved.session_id, message.message_id, generation='original',
+                 attempt_id=reserved[0].attempt_id, status='succeeded')
+    receipt_path = next((inbox.root / saved.session_id / 'terminal').glob('*.json'))
+    receipt_data = json.loads(receipt_path.read_bytes())
+    receipt_data.update(version=2, legacy_order=99, unrelated={'ignored': True})
+    receipt_data['message']['untrusted_role'] = 'admin'
+    receipt_path.write_text(json.dumps(receipt_data))
+    original_receipt = receipt_path.read_bytes()
+    recovered = inbox.recover(saved.session_id, 'fresh-owner')
+    assert len(recovered) == 1 and recovered[0].status == 'succeeded'
+    assert recovered[0].attempt_id == reserved[0].attempt_id and len(recovered[0].attempts) == 1
+    assert receipt_path.read_bytes() == original_receipt
+    with pytest.raises(ValueError, match='not pending'):
+        inbox.reserve(saved.session_id, ('completed',), cwd=tmp_path, branch_id='', generation='fresh-owner')
+    # Missing current owner data still fails; unknown metadata cannot replace it.
+    from xdog.coding.core.sessions.inbox_models import record_from_data
+    del receipt_data['owner_generation']
+    with pytest.raises(ValueError, match='Missing required inbox fields'):
+        record_from_data(receipt_data)
     # Unknown metadata never supplies missing current permission state.
     del snapshot['access']
     path.write_text(json.dumps(snapshot))

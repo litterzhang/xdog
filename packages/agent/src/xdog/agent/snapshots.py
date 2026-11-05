@@ -571,7 +571,8 @@ def decode_snapshot(value: str | bytes | dict[str, Any], *,
     Incomplete pairs require interrupted recovery data covering each pending call.
     Matching completed pairs can also carry unknown/cancelled recovery records:
     an error result does not prove an external side effect was rolled back.
-    Such candidates fail ``require_resumable``. Only canonical fields are accepted.
+    Such candidates fail ``require_resumable``. Unknown top-level metadata is ignored;
+    only canonical fields supply restored state.
     """
     return _decode_snapshot(_read(value), custom_validators=custom_validators)
 
@@ -579,10 +580,13 @@ def decode_snapshot(value: str | bytes | dict[str, Any], *,
 def _decode_snapshot(raw: dict[str, Any], messages: tuple[AgentMessage, ...] | None = None, *,
                      custom_validators: CustomValidators | None = None) -> Snapshot:
     """Shared schema and whole-history checks after bounded JSON detachment."""
-    _object(raw, "snapshot", {
+    fields = {
         "format", "version", "messages", "base_system_prompt", "model", "options", "settings", "skills",
         "compaction", "session_id", "run_id", "run_active", "cwd", "error", "interrupted", "interrupted_tools",
-    })
+    }
+    # Unrelated metadata cannot override current options or restore host authority.
+    raw = {key: value for key, value in raw.items() if key in fields}
+    _object(raw, "snapshot", fields)
     if raw["format"] != SNAPSHOT_FORMAT:
         _fail("format", "unknown snapshot format")
     if type(raw["version"]) is not int or raw["version"] != SNAPSHOT_VERSION:

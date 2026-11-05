@@ -8,6 +8,7 @@ from xdog.coding.modes.interactive.components.assistant_message import Assistant
 from xdog.coding.modes.interactive.components.tool_execution import ToolExecutionComponent
 from xdog.coding.modes.interactive.components.user_message import UserMessageComponent
 from xdog.coding.modes.interactive.theme import Theme
+from xdog.tui.components.command_message import CommandMessage
 from xdog.tui.components.details import set_details_expanded
 from xdog.tui.components.details_panel import DetailRecord
 from xdog.tui.components.extension_command import ExtensionCommand
@@ -93,6 +94,12 @@ class ChatLog(Transcript):
     def add_assistant(self, text: str, *, thinking: str = "") -> None:
         """Add a completed assistant message, including visible reasoning."""
         self._append(AssistantMessageComponent(text, self._theme, thinking=thinking))
+
+    def add_command(self, command: str) -> CommandMessage:
+        """Retain an invocation/result only in this UI's component tree."""
+        component = CommandMessage(command, self._theme.panel_theme(), marker_style=self._theme.tool)
+        self._append(component)
+        return component
 
     def add_system(self, text: str) -> None:
         """Add a system/info message."""
@@ -194,7 +201,7 @@ class ChatLog(Transcript):
                     body=child.detail_body,
                     kind="reasoning",
                 ))
-            elif isinstance(child, ExtensionCommand) and child.detail_body:
+            elif isinstance(child, (CommandMessage, ExtensionCommand)) and child.detail_body:
                 records.append(DetailRecord(child.detail_title, child.detail_body, "command"))
             elif isinstance(child, SessionInputComponent):
                 records.append(DetailRecord('External input ' + child.identifier, child.detail_body, 'input'))

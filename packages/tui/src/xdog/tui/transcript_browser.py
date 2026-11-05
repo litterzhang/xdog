@@ -91,8 +91,8 @@ class TranscriptBrowser:
                 return self._serial
             self._serial += 1
             self._pending = (self._serial, request)
-            # Old rows are not actionable while a replacement is pending.
-            self._view = replace(self._view, version=self._serial, busy=True, rows=())
+            # Keep the last frame visible while computing; busy still fences all actions.
+            self._view = replace(self._view, busy=True)
             if self._thread is None:
                 self._thread = threading.Thread(target=self._work, daemon=True, name="xdog-transcript-browser")
                 self._thread.start()

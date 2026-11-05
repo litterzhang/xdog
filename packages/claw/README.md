@@ -399,7 +399,12 @@ The terminal cursor is visible in the focused editor and hidden while inspecting
 details or approving a tool; returning to input restores it at the draft position.
 Streaming updates use bounded FIFO batches to keep input responsive.
 
-Ctrl+O opens recent tool/reasoning details. Left/Right changes entries and Page
+Slash invocations and up to ten rendered result rows remain in the current TUI with a colored
+`•` prefix. Full results are available through Ctrl+O; gateway replies are linked
+by their original requests. These display records are not sent as chat input or
+saved in group transcripts, and ordinary notifications remain separate.
+
+Ctrl+O opens recent command/tool/reasoning details. Left/Right changes entries and Page
 Up/Page Down scrolls. Escape closes autocomplete/details before cancelling a
 run. Cancellation and busy rejection restore submitted and queued text ahead
 of a newer draft; input submitted during cancellation stays editable. Ctrl+Z

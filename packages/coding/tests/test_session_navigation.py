@@ -125,3 +125,64 @@ def test_live_browser_search_tree_and_activation_retains_draft_and_visible_conte
         assert ui._editor.focused
     finally:
         ui._request_exit()
+
+
+def test_local_slash_invocations_pair_compact_results_without_saving_or_prompting(tmp_path):
+    from xdog.tui.components.command_message import CommandMessage
+    from xdog.tui.utils import string_width, strip_ansi
+
+    current = session(tmp_path)
+    ui = InteractiveMode(current)
+    original_messages = tuple(current.messages)
+    saved_path = current.session_manager._session_path(current.session_id)
+    saved_bytes = saved_path.read_bytes()
+    try:
+        ui._handle_submit("/keys")
+        keys = ui._chat_log.children[-1]
+        assert isinstance(keys, CommandMessage) and keys.detail_title == "/keys"
+        compact = keys.render(90)
+        assert strip_ansi(compact[0]) == " • /keys"
+        assert ui._theme.tool("•") in compact[0]
+        assert len(compact) == 12 and "Ctrl+O" in strip_ansi(compact[-1])
+        assert "Active keybindings" in keys.detail_body and "Ctrl+Enter" in keys.detail_body
+        assert ui._chat_log.detail_records()[-1].body == keys.detail_body
+        ui._open_details()
+        assert "Active keybindings" in strip_ansi("\n".join(ui._details_panel.render(120)))
+        ui._close_details()
+        for width in (1, 3, 10, 90):
+            assert all(string_width(row) <= width for row in keys.render(width))
+        preview = CommandMessage("/example", ui._theme.panel_theme())
+        preview.set_result("\n".join(f"result {i}" for i in range(11)))
+        rows = [strip_ansi(row).strip() for row in preview.render(90)]
+        assert rows[1:11] == [f"result {i}" for i in range(10)]
+        assert rows[11] == "Ctrl+O: full command result"
+        assert "result 10" in preview.detail_body
+        preview.set_result("short result\nsecond line")
+        assert [strip_ansi(row).strip() for row in preview.render(90)] == [
+            "• /example", "short result", "second line"]
+        preview.set_result("x" * 120)
+        assert len(preview.render(13)) == 12  # Ten wrapped rows, not ten source lines.
+        preview.set_expanded(True)
+        assert len(preview.render(13)) == 13  # Full output remains available.
+        # The worker result updates the original invocation, even after newer UI output.
+        ui._handle_submit("/name")
+        invocation = ui._command
+        assert invocation is not None
+        ui._chat_log.add_system("an unrelated notice")
+        ui._command_thread.join(3)
+        assert not ui._command_thread.is_alive()
+        ui._event_queue.drain(ui._handle_ui_event)
+        assert ui._command is None
+        assert invocation.display.detail_title == "/name"
+        assert "Session name:" in invocation.display.detail_body
+        assert ui._chat_log.children.count(invocation.display) == 1
+        stale = invocation.display.detail_body
+        ui._handle_ui_event({"type": "command_result", "command_id": invocation.id, "output": "stale"})
+        assert invocation.display.detail_body == stale
+        assert tuple(current.messages) == original_messages
+        assert saved_path.read_bytes() == saved_bytes
+        ui._chat_log.clear_all()
+        ui._replay_history()
+        assert not any(isinstance(child, CommandMessage) for child in ui._chat_log.children)
+    finally:
+        ui._request_exit()

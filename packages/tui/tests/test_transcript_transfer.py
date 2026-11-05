@@ -150,3 +150,59 @@ def test_clipboard_owned_child_cancel_is_reaped_without_fallback_retry(tmp_path,
     worker.join(3)
     assert not worker.is_alive() and len(created) == 1
     assert created[0].poll() is not None and "uncertain" in errors[0]
+
+
+def test_fullscreen_navigation_keeps_last_frame_but_fences_pending_output(monkeypatch):
+    from xdog.tui.components.transcript_panel import TranscriptPanel
+    from xdog.tui.transcript_browser import TranscriptBrowser
+
+    records = (TranscriptRecord("a", "assistant", "answer", "first line\nsecond line\nthird line"),)
+    output = []
+    panel = TranscriptPanel(lambda: records, lambda: None, lambda: None,
+                            on_output=lambda *args: output.append(args))
+    entered, release = threading.Event(), threading.Event()
+    original_build = TranscriptBrowser._build
+
+    def blocked_build(browser, serial, request):
+        entered.set()
+        assert release.wait(3)
+        return original_build(browser, serial, request)
+
+    def settle():
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            panel.poll()
+            if panel.settled:
+                return
+            time.sleep(0.002)
+        pytest.fail("Transcript viewport did not settle")
+
+    try:
+        panel.fullscreen = True
+        panel.set_render_budget(8)
+        panel.render(100)
+        settle()
+        panel.handle_input(KeyEvent("v"))
+        settle()
+        assert panel.selection == (0, 0)
+        before = panel.render(100)
+        monkeypatch.setattr(TranscriptBrowser, "_build", blocked_build)
+        panel.handle_input(KeyEvent("down"))
+        assert entered.wait(3)
+        panel.poll()
+        assert not panel.settled and panel.selection is None and panel.entry_id == ""
+        assert panel.render(100) == before
+        panel.handle_input(KeyEvent("y"))
+        assert not output
+        # A newer request must supersede the unpublished first move.
+        panel.handle_input(KeyEvent("down"))
+        release.set()
+        settle()
+        assert panel.selection == (0, 2)
+        after = panel.render(100)
+        assert sum(old != new for old, new in zip(before, after, strict=True)) < len(before)
+        panel.handle_input(KeyEvent("y"))
+        assert output == [("copy", "selection")]
+    finally:
+        release.set()
+        panel.close()

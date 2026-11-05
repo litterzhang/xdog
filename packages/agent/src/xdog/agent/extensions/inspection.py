@@ -43,15 +43,17 @@ def validate(operation: str, value: Any) -> dict[str, Any]:
                 raise ValueError('Invalid inspected vision capabilities')
         if value['thinking'] not in _EFFORTS:
             raise ValueError('Invalid inspected thinking level')
-        for key, allowed, maximum in (('input', ('text', 'image'), 2), ('supported_efforts', _EFFORTS[1:], 5)):
+        # Advertised effort names are provider metadata, not selectable runtime options.
+        for key, allowed, maximum in (('input', ('text', 'image'), 2), ('supported_efforts', (), 32)):
             rows = value[key]
             if rows is None:
                 continue
             if (not isinstance(rows, list) or len(rows) > maximum
-                    or any(not isinstance(item, str) or len(item) > 32
+                    or any(not isinstance(item, str) or not item or len(item) > 32
+                           or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in item)
                            or allowed and item not in allowed for item in rows)
                     or len(rows) != len(set(rows))):
-                raise ValueError('Invalid inspected model capability list')
+                raise ValueError(f'Invalid inspected model {key} capability list')
     elif operation == 'usage':
         fields = {'session_id', 'model', 'context_window', 'max_prompt_tokens', 'context_limit', 'message_count',
                   'tokens', 'percent', 'source', 'messages_since_usage', 'components'}

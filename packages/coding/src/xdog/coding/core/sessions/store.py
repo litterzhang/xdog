@@ -68,22 +68,21 @@ class InputStore:
         result = []
         identifiers: set[str] = set()
         for row in rows:
-            if (not isinstance(row, dict) or set(row) != {
-                'input', 'branch_id', 'generation', 'status', 'error', 'batch_id',
-                'start_order', 'started_at', 'settled_at'}):
+            if (not isinstance(row, dict) or not {
+                'input', 'branch_id', 'generation', 'status', 'error', 'batch_id'} <= row.keys()):
                 raise ValueError("Invalid input history record")
             if not isinstance(row["status"], str) or row["status"] not in STATES or any(
                 not isinstance(row[key], str) for key in ("branch_id", "generation", "error")
             ):
                 raise ValueError("Invalid input history state")
-            batch_id = row.get('batch_id', '')
+            batch_id = row['batch_id']
             _batch_id(batch_id)
             value = decode_input(row["input"])
             if value.id in identifiers:
                 raise ValueError("Duplicate input history identity")
             identifiers.add(value.id)
-            order, started, settled = row['start_order'], row['started_at'], row['settled_at']
-            if (type(order) is not int or not 0 <= order < 2**53
+            order, started, settled = row.get('start_order'), row.get('started_at'), row.get('settled_at')
+            if (order is not None and (type(order) is not int or not 0 <= order < 2**53)
                     or any(v is not None and (type(v) not in (int, float) or not math.isfinite(v) or v <= 0)
                            for v in (started, settled))
                     or bool(order) != (started is not None)
@@ -170,6 +169,7 @@ class InputStore:
 
     @staticmethod
     def latest_execution(path: Path, branch: str) -> dict[str, Any] | None:
+        # Only recorded provenance supplies an execution ordering, never intake position.
         records = InputStore.read_records(path)
         selected = [row for row in records if row.branch_id == branch]
         started = [row for row in selected if row.start_order]

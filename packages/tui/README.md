@@ -86,6 +86,7 @@ Not all host-facing helpers are re-exported from the package root or
 | `xdog.tui.components.inline_layout` | `InlineLayout` for height allocation |
 | `xdog.tui.event_queue` | `EventQueue` for bounded UI-thread delivery |
 | `xdog.tui.components.messages` | `Transcript` and source-record projection |
+| `xdog.tui.components.command_message` | `CommandMessage`: local invocation, compact result and full detail text; no execution or persistence |
 | `xdog.tui.transcript_actions` / `xdog.tui.transcript_transfer` | Explicit reviewed output lifecycle and prepared transfers/workers |
 | `xdog.tui.components.child_panel` / `child_queue_panel` | `ChildPanel` / read-only `ChildQueuePanel` |
 | `xdog.tui.components.mcp_panel` / `oauth_panel` | `McpPanel` / `OAuthPanel` presentation, not connections or credentials |

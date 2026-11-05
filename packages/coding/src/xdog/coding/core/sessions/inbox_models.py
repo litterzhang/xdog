@@ -68,8 +68,8 @@ def label(value: object, *, empty: bool = False, maximum: int = 256) -> str:
 
 
 def object_fields(value: object, fields: set[str]) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != fields:
-        raise ValueError('Invalid inbox fields')
+    if not isinstance(value, dict) or not fields <= value.keys():
+        raise ValueError('Missing required inbox fields')
     return value
 
 
@@ -115,9 +115,7 @@ def record_data(value: InboxRecord) -> dict[str, object]:
 
 
 def record_from_data(value: object) -> InboxRecord:
-    if not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] != 3:
-        raise ValueError('Unsupported inbox record version')
-    fields = {'version', 'message', 'branch_id', 'status', 'owner_generation',
+    fields = {'message', 'branch_id', 'status', 'owner_generation',
               'attempt_id', 'request_id', 'error', 'attempts'}
     fields |= {'sequence', 'batch_id'}
     data = object_fields(value, fields)

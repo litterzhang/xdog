@@ -232,3 +232,51 @@ def test_claw_terminal_title_tracks_live_name_and_context_replacement(monkeypatc
         assert titles == ['First task', 'Renamed task', 'xdog-claw · main']
     finally:
         ui._request_exit()
+
+
+def test_tui_slash_results_are_local_paired_and_original_request_bound():
+    from xdog.claw.channels.tui.tui_app import ChatApp
+    from xdog.tui.components.command_message import CommandMessage
+    from xdog.tui.utils import strip_ansi
+
+    ui = ChatApp('/tmp/unused-local-commands.sock')
+    try:
+        ui._handle_submit('/keys')
+        keys = ui._chat_log.children[-1]
+        assert isinstance(keys, CommandMessage) and keys.detail_title == '/keys'
+        assert strip_ansi(keys.render(90)[0]) == ' • /keys'
+        assert len(keys.render(90)) == 12 and 'Ctrl+O' in strip_ansi(keys.render(90)[-1])
+        assert 'Active keybindings' in ui._detail_records()[-1].body
+        assert ui._send_queue.empty()  # No gateway/model traffic for local help.
+        ui._handle_response({'type': 'pong', 'session_id': 'owner', 'session_name': 'Kept',
+                             'session_name_read': 1})
+        ui._handle_submit('/name')
+        invocation = ui._chat_log.children[-1]
+        assert isinstance(invocation, CommandMessage)
+        pending = ui._name_read
+        assert pending is not None
+        request_id = pending[0]
+        before = invocation.detail_body
+        ui._handle_response({'type': 'session_result', 'request_id': 'foreign', 'group_id': 'main',
+                             'session_id': 'owner', 'success': True, 'action': 'name', 'session_name': 'WRONG'})
+        assert invocation.detail_body == before
+        ui._chat_log.add_system('unrelated notice')
+        ui._handle_response({'type': 'session_result', 'request_id': request_id, 'group_id': 'main',
+                             'session_id': 'owner', 'success': True, 'action': 'name', 'session_name': 'Kept'})
+        assert 'Session name: Kept' in invocation.detail_body
+        assert 'unrelated notice' not in invocation.detail_body
+        assert ui._chat_log.children.count(invocation) == 1
+        # Ordinary chat and notifications remain ordinary, not command output.
+        ui._handle_response({'type': 'notification', 'group_id': 'main', 'content': 'REAL NOTIFICATION'})
+        assert 'REAL NOTIFICATION' not in invocation.detail_body
+        assert ui._chat_log.command_output is None
+        ui._handle_submit('/reset')
+        reset = ui._chat_log.children[-1]
+        ui._handle_response({'type': 'reset_ack', 'session_id': 'new-owner'})
+        assert reset in ui._chat_log.children and reset.detail_body == 'New context'
+        assert ui._chat_log.children.count(reset) == 1
+        ui._chat_log.clear_all()
+        ui._prune_command_displays()
+        assert not ui._command_displays and not ui._detail_records()
+    finally:
+        ui._request_exit()

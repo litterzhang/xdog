@@ -100,6 +100,9 @@ Ctrl+Enter, Shift+Enter and Alt+Enter insert a newline when the terminal forward
 the modified key. If a desktop shortcut intercepts Ctrl+Enter, rebind that shortcut
 or use Alt+Enter; the application cannot override desktop window management.
 
+- Slash invocations stay visible with a colored `•` prefix and up to ten rendered result rows.
+  Ctrl+O shows the full result. These display records exist only in the current
+  TUI: they are not saved in session history or inserted into Agent context.
 - `/details` or Ctrl+O opens a focused panel, including feedback when empty.
 - Left/Right selects an entry; PgUp/PgDn reads pages; Home reads from the top.
 - Details always open at the first line, including tool logs. Page Up/Page Down
@@ -2913,15 +2916,19 @@ configuration defaults to `medium`. Retired aliases (`normal`, `deep`,
 
 ### Removed interfaces and stored formats
 
-No old planning state is converted into access permissions. Current saved sessions
-must contain explicit access metadata; old planning sidecars/records are rejected,
-not migrated. A completed child needs its current safe SDK snapshot to continue;
-there is no history-based reconstruction or read-only compatibility continuation.
-Child task knowledge belongs in the explicit task; the removed `instructions`
-field/flag is not accepted. Use `system_prompt` only for an explicitly selected
-child-owned role. Current permissions/owner checks still apply.
+Current saved sessions require explicit, valid access metadata. Unrelated saved
+metadata is ignored, never translated into permissions, prompt/options aliases or
+execution controls; retired planning sidecars are not probed or migrated.
+A completed child needs its current safe SDK snapshot to continue; there is no
+history-based reconstruction or read-only compatibility continuation. Child task
+knowledge belongs in the explicit task. The removed `instructions` flag has no
+alias; an unrelated saved field of that name does not supply instructions.
+Use `system_prompt` for an explicitly selected child-owned role. Current
+permissions/owner checks still apply.
 
-Coding Inbox records use version 3. Old approval states, `legacy_order`, version
-1/2 migration and synthetic execution-order backfill are removed. Execution
-history requires the current admission/timestamp fields. Unknown effects remain
-interrupted, never automatically replayed.
+Coding Inbox writers emit version 3. Readers validate current identity, status,
+owner and attempt facts, ignoring unrelated metadata and version labels rather
+than migrating records. Missing execution observations in non-executable history
+remain unknown; any supplied observations must be consistent. No synthetic
+execution order, timestamp or old approval-state migration is provided. Unknown
+effects remain interrupted, never automatically replayed.

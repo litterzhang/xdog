@@ -210,7 +210,7 @@ class TranscriptPanel(ThemedPanel):
         view = self._view
         if self._source_busy:
             body = [f"Loading {self.source_label}… (Esc closes without canceling agent work)"]
-        elif view.busy or view.version != self._serial or self.browser.snapshot().busy:
+        elif not view.rows and (view.busy or view.version != self._serial or self.browser.snapshot().busy):
             body = [f"Loading {self.content_label}…"]
         elif view.error:
             body = [self.panel_theme.error(f"{self.caption} error: {view.error}")]
@@ -228,9 +228,10 @@ class TranscriptPanel(ThemedPanel):
                 body = [f"No {self.content_label} available"]
         mode = "fullscreen" if self.fullscreen else "inline"
         header = f"{self.caption} ({mode})"
-        selected = self.selection
-        if selected:
-            header += f" · selected {selected[1] - selected[0] + 1} lines"
+        # Describe the displayed frame, not the pending (non-actionable) request.
+        if view.anchor is not None:
+            end = view.selection_end if view.selection_end is not None else view.cursor
+            header += f" · selected {abs(end - view.anchor) + 1} lines"
         if self._source_status:
             header += f" · {self._source_status}"
         header += f" · {view.cursor + 1 if view.total else 0}/{view.total} · {view.title}"

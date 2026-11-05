@@ -22,7 +22,7 @@ project follows [semantic versioning](https://semver.org/).
 
 ### Changed
 
-- Retain 1,100 risk-driven pytest cases instead of 10,942; remove redundant matrices
+- Retain 1,103 risk-driven pytest cases instead of 10,942; remove redundant matrices
   and implementation-detail tests while preserving core workflows, permission and
   owner boundaries, consistency and important regressions. Document accepted gaps.
 - Use one full-suite pytest invocation with at most two workers, and document a
@@ -31,10 +31,21 @@ project follows [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- Retain Coding/Claw slash invocations and compact results in the current TUI only,
+  with a colored command bullet and full results in Details; never add display
+  records to Agent context or persisted sessions.
+- Inspect provider-advertised effort names such as `max` as bounded metadata,
+  without failing `/session` or changing selectable runtime thinking levels.
+- Ignore unrelated saved child configuration metadata instead of disabling the
+  entire child catalog. Ignore unrelated snapshot-level metadata without aliasing
+  current prompt/options; retain current field validation and never replay saved work.
 - Resume Coding sessions with unrelated metadata without interpreting or rejecting
   retired planning fields. Access comes only from validated current fields; unknown
   metadata cannot supply missing permissions. Claw no longer probes retired plan
   files or rejects checkpoint metadata because of those field names.
+- Keep unrecorded execution observations in Coding's non-executable input history
+  unknown instead of blocking session startup or inventing timestamps/order. Ignore
+  unrelated record metadata; validate any actual observations and never replay history.
 
 ## [2.6.0] — 2026-11-05
 

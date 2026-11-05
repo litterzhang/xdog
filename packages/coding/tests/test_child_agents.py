@@ -179,10 +179,37 @@ async def test_slash_commands_spawn_real_children_and_reload_catalog_without_rep
         before = len(contexts)
         owner = session.children
         await owner.runtime.aclose()
+        path = owner.store.root / f"{identifier}.json"
+        saved = json.loads(path.read_text())
+        saved["config"]["instructions"] = "Not a current instruction or permission grant"
+        saved["config"]["unknown_metadata"] = {"tools": ["bash"], "access": "inherit"}
+        saved["session_state"].update(system_prompt="Not the current prompt", temperature=99,
+                                      thinking="unknown", max_tokens=-1)
+        path.write_text(json.dumps(saved))
+        original = path.read_bytes()
         session._load_children()
+        assert path.read_bytes() == original
+        restored = session.children.store.load()[0]["config"]
+        assert "instructions" not in restored and "unknown_metadata" not in restored
+        assert restored == {key: value for key, value in saved["config"].items()
+                            if key not in {"instructions", "unknown_metadata"}}
+        from xdog.agent.snapshots import decode_snapshot
+        state = saved["session_state"]
+        snapshot = decode_snapshot({**state, "messages": saved["messages"]})
+        assert snapshot.base_system_prompt == state["base_system_prompt"]
+        missing = {**state, "messages": saved["messages"]}
+        missing.pop("base_system_prompt")
+        with pytest.raises(ValueError, match="missing fields.*base_system_prompt"):
+            decode_snapshot(missing)
         result = await execute_command("agents", "inspect " + identifier, session)
         assert json.loads(result.output)["status"] == "completed" and len(contexts) == before
         assert "child done" in result.output
+        assert path.read_bytes() == original
+        # Extra metadata must not mask invalid current authority fields.
+        saved["config"]["inherit_context"] = True
+        path.write_text(json.dumps(saved))
+        with pytest.raises(ValueError, match="inherit_context must be false"):
+            session.children.store.load()
     finally:
         await session.children.runtime.aclose()
         session.dispose()
@@ -477,7 +504,7 @@ async def test_coding_global_presets_reused_by_cli_picker_and_ignore_project_act
 
 async def test_invalid_coding_preset_catalog_does_not_erase_parent_permission_settings(tmp_path):
     (tmp_path / "settings.json").write_text(json.dumps({"permission_mode": "deny", "child_presets": {
-        "writer": {"config": {"permission_mode": "allow-all"}}}}))
+        "writer": {"config": {"permission_mode": "allow-all", "inherit_context": True}}}}))
     session, contexts = create(tmp_path, "deny")
     try:
         assert session.settings._global.permission_mode == "deny"

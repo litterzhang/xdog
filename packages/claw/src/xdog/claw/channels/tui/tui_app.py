@@ -39,7 +39,8 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,7 @@ from xdog.tui.child_browser import child_entries
 from xdog.tui.child_drafts import ChildDraft
 from xdog.tui.components.attachment_panel import AttachmentPanel
 from xdog.tui.components.child_panel import ChildPanel
+from xdog.tui.components.command_message import CommandMessage
 from xdog.tui.components.details import set_details_expanded
 from xdog.tui.components.details_panel import DetailRecord, DetailsPanel, streaming_preview
 from xdog.tui.components.extension_command import ExtensionCommand
@@ -661,6 +663,7 @@ class ChatLog(Transcript):
         self._streaming_runs: dict[str, AssistantMessage] = {}
         self._tools: dict[str, ToolMessage] = {}
         self._details_expanded = False
+        self.command_output: CommandMessage | None = None
         self.input_ids: set[str] = set()
         self.input_responses: dict[str, list[str]] = {}
 
@@ -680,7 +683,26 @@ class ChatLog(Transcript):
             self.input_responses.setdefault(checked['input_id'], []).append(text)
         self._append(AssistantMessage(text, thinking=thinking, metadata=checked))
 
+    def add_command(self, command: str) -> CommandMessage:
+        component = CommandMessage(command, _panel_theme())
+        self._append(component)
+        return component
+
+    @contextmanager
+    def capture_command_output(self, component: CommandMessage | None) -> Iterator[None]:
+        """Capture only this synchronous UI dispatch; never ambient later events."""
+        previous, self.command_output = self.command_output, component
+        try:
+            yield
+        finally:
+            self.command_output = previous
+
     def add_system(self, text: str, *, source: str = 'tui', metadata: object = None) -> None:
+        if self.command_output is not None and source == 'tui' and metadata is None:
+            if self.command_output not in self.children:
+                self._append(self.command_output)
+            self.command_output.append_result(text)
+            return
         message = SystemMessage(text, source)
         message.metadata.update(clean_metadata(metadata))
         self._append(message)
@@ -792,6 +814,8 @@ class ChatLog(Transcript):
             elif isinstance(child, ExternalMessage):
                 title, body, kind = child.detail_title, child.detail_body, 'system'
                 metadata = child._text.metadata
+            elif isinstance(child, CommandMessage):
+                title, body, kind = child.detail_title, child.detail_body, 'command'
             elif isinstance(child, (ToolMessage, ExtensionCommand, SystemMessage)):
                 title, body = child.detail_title, child.detail_body
                 kind = 'tool' if isinstance(child, ToolMessage) else 'system'
@@ -1050,6 +1074,9 @@ class ChatApp:
         self._tui = TUI()
 
         self._chat_log = ChatLog()
+        # Presentation links use existing request IDs, never execution authority.
+        self._command_displays: dict[tuple[int, str], CommandMessage] = {}
+        self._capturing_command_requests = False
         self._output_epoch = 0
         self._artifact_loader = ArtifactLoader(self._recv_queue.put)
         self._outputs = TranscriptActions(self._recv_queue.put, self._chat_log.add_system,
@@ -1285,7 +1312,10 @@ class ChatApp:
         return True
 
     def _show_keybindings(self) -> None:
-        self._chat_log.add_system(self._keymap.help_text() + "\n\n" + self._effective_extension_shortcuts().help_text())
+        display = self._chat_log.command_output
+        if display is None:
+            display = self._chat_log.add_command("/keys")
+        display.set_result(self._keymap.help_text() + "\n\n" + self._effective_extension_shortcuts().help_text())
         self._tui.request_render()
 
     def _open_external_editor(self) -> None:
@@ -3079,6 +3109,13 @@ class ChatApp:
 
     def _queue_request(self, request: dict[str, Any], images: tuple[Attachment, ...] = ()) -> None:
         """Fence requests to the session connection visible to the UI."""
+        display = self._chat_log.command_output
+        if self._capturing_command_requests and display is not None:
+            identifier = request.get('request_id')
+            if not isinstance(identifier, str) or not identifier:
+                identifier = {'status': 'type:status', 'reset': 'type:reset_ack'}.get(str(request.get('type')))
+            if identifier:
+                self._command_displays[self._connection_generation, identifier] = display
         self._send_queue.put({**request, "_connection_generation": self._connection_generation,
                               **({"_images": images} if images else {})})
 
@@ -3482,6 +3519,27 @@ class ChatApp:
     # ── Input submission (matching OpenClaw's createEditorSubmitHandler) ─
 
     def _handle_submit(self, text: str, *, queued: bool = False, images: tuple[Attachment, ...] = ()) -> None:
+        if queued or not text.lstrip().startswith('/'):
+            self._submit(text, queued=queued, images=images)
+            return
+        display = self._chat_log.add_command(text.strip())
+        self._tui.request_render()
+        previous, self._capturing_command_requests = self._capturing_command_requests, True
+        try:
+            with self._chat_log.capture_command_output(display):
+                self._submit(text, queued=queued, images=images)
+                if display not in self._chat_log.children:
+                    self._chat_log._append(display)
+        finally:
+            self._capturing_command_requests = previous
+            self._prune_command_displays()
+
+    def _prune_command_displays(self) -> None:
+        visible = set(self._chat_log.children)
+        self._command_displays = {key: display for key, display in self._command_displays.items()
+                                  if key[0] == self._connection_generation and display in visible}
+
+    def _submit(self, text: str, *, queued: bool = False, images: tuple[Attachment, ...] = ()) -> None:
         """Handle editor submit (matching OpenClaw's submit handler).
 
         Flow: clear editor → add to history → handle slash/message.
@@ -4003,6 +4061,25 @@ class ChatApp:
                 tool.set_result(result, is_error=bool(entry.get("is_error", False)))
 
     def _handle_response(self, msg: Mapping[str, Any]) -> None:
+        generation = self._connection_generation
+        identifier = msg.get('request_id')
+        if not isinstance(identifier, str) or not identifier:
+            identifier = 'type:' + str(msg.get('type'))
+        display = self._command_displays.get((self._connection_generation, identifier))
+        if (msg.get('_connection_generation', self._connection_generation) != self._connection_generation
+                or msg.get('group_id', self.group_id) != self.group_id
+                or display not in self._chat_log.children):
+            display = None
+        try:
+            with self._chat_log.capture_command_output(display):
+                self._dispatch_response(msg)
+        finally:
+            if msg.get('type') in {'status', 'reset_ack'} and display is not None:
+                self._command_displays.pop((self._connection_generation, identifier), None)
+            if display is not None or generation != self._connection_generation:
+                self._prune_command_displays()
+
+    def _dispatch_response(self, msg: Mapping[str, Any]) -> None:
         msg = thaw_event(msg)
         msg_type = msg.get("type")
         if msg_type == 'session_name_updated':
@@ -5284,7 +5361,12 @@ class ChatApp:
             self._chat_log.clear_all()
             self._usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
             self._last_turn_usage = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-            self._chat_log.add_system("New context", metadata={"session_id": self._state["session_id"]})
+            display = self._chat_log.command_output
+            if display is not None:
+                self._chat_log.add_child(display)
+                display.set_result("New context")
+            else:
+                self._chat_log.add_system("New context", metadata={"session_id": self._state["session_id"]})
             self._update_header()
             self._update_footer()
             self._group_history_dirty = True

@@ -73,6 +73,7 @@ from xdog.tui.child_browser import ChildSourceWorker, child_entries
 from xdog.tui.child_drafts import ChildDraft
 from xdog.tui.components.attachment_panel import AttachmentPanel
 from xdog.tui.components.child_panel import ChildPanel
+from xdog.tui.components.command_message import CommandMessage
 from xdog.tui.components.details_panel import DetailsPanel
 from xdog.tui.components.extension_command import ExtensionCommand
 from xdog.tui.components.extension_dialog import ExtensionDialog
@@ -124,6 +125,7 @@ class _CommandState:
     id: int
     name: str
     mutating: bool
+    display: CommandMessage
     cancel_requested: bool = False
 
 
@@ -554,8 +556,9 @@ class InteractiveMode:
         self._handle_slash_command(command, "")
         return True
 
-    def _show_keybindings(self) -> None:
-        self._chat_log.add_system(self._keymap.help_text() + "\n\n" + self._effective_extension_shortcuts().help_text())
+    def _show_keybindings(self, display: CommandMessage | None = None) -> None:
+        display = display if display is not None else self._chat_log.add_command("/keys")
+        display.set_result(self._keymap.help_text() + "\n\n" + self._effective_extension_shortcuts().help_text())
         self._tui.request_render()
 
     def _open_external_editor(self) -> None:
@@ -2218,27 +2221,29 @@ class InteractiveMode:
     def _handle_slash_command(self, cmd: str, args: str) -> None:
         if self._exit_requested:
             return
+        display = self._chat_log.add_command(f"/{cmd}" + (f" {args}" if args else ""))
+        self._tui.request_render()
         if cmd == 'readonly':
             if args.strip() not in {'', 'status', 'on', 'off'}:
-                self._chat_log.add_system('Usage: /readonly on|off|status')
+                display.set_result('Usage: /readonly on|off|status')
                 return
             if (self._permission_prompt is not None or self._permission_waiters or self._tui.has_overlay()
                     or self._extension_dialog_panel is not None or self._extension_dialog_queue):
-                self._chat_log.add_system('Another protected owner has input; access control not admitted')
+                display.set_result('Another protected owner has input; access control not admitted')
                 return
         if cmd == 'login':
             from xdog.agent.extensions.provider_oauth_host import login_arguments
             try:
                 cmd, args = 'extensions', 'auth ' + login_arguments(args)
             except ValueError as exc:
-                self._chat_log.add_system(str(exc))
+                display.set_result(str(exc))
                 self._tui.request_render()
                 return
         if cmd == "compact" and args.strip() == "cancel":
             if self._command is not None and self._command.name == "compact":
                 self._cancel_command()
             else:
-                self._chat_log.add_system("No compaction command is active")
+                display.set_result("No compaction command is active")
                 self._tui.request_render()
             return
         if cmd == 'draft':
@@ -2255,11 +2260,11 @@ class InteractiveMode:
         if self._exit_requested:
             return
         if cmd == 'agents' and args.strip().partition(' ')[0] == 'queue':
-            self._chat_log.add_system('Child queue controls were removed; /agents opens read-only inspection')
+            display.set_result('Child queue controls were removed; /agents opens read-only inspection')
             self._tui.request_render()
             return
         if cmd == 'agents' and args.strip().partition(' ')[0] == 'saved':
-            self._chat_log.add_system('Child draft disk management was removed; '
+            display.set_result('Child draft disk management was removed; '
                                       '/agents drafts recovers this session only')
             self._tui.request_render()
             return
@@ -2310,7 +2315,7 @@ class InteractiveMode:
             self._send_runtime_input("steer" if cmd == "steer" else "follow_up", args)
             return
         if cmd == "keys":
-            self._show_keybindings()
+            self._show_keybindings(display)
             return
         if cmd == "editor":
             self._open_external_editor()
@@ -2321,7 +2326,7 @@ class InteractiveMode:
                 text = command_help(self._editor._command_provider(), args)
             except (ValueError, TypeError) as exc:
                 text = f'Help unavailable: {exc}'
-            self._chat_log.add_system(text)
+            display.set_result(text)
             self._tui.request_render()
             return
         if cmd == "details":
@@ -2332,7 +2337,7 @@ class InteractiveMode:
             return
         if cmd == "status":
             self._update_footer()
-            self._chat_log.add_system(self._footer.describe())
+            display.set_result(self._footer.describe())
             self._tui.request_render()
             return
 
@@ -2348,7 +2353,7 @@ class InteractiveMode:
             return
 
         self._command_sequence += 1
-        command = _CommandState(self._command_sequence, cmd, mutating)
+        command = _CommandState(self._command_sequence, cmd, mutating, display)
         self._command = command
         if mutating:
             with self._queue_lock:
@@ -3356,6 +3361,8 @@ class InteractiveMode:
                 self._streaming_text = ""
                 self._streaming_thinking = ""
                 self._replay_history(event.get('history_snapshot'))
+            if command is not None and command.display not in self._chat_log.children:
+                self._chat_log.add_child(command.display)
             rich = event.get("rich_output")
             if isinstance(rich, ExtensionCommandResult):
                 if event.get("owner_session") == self._session.session_id:
@@ -3366,7 +3373,10 @@ class InteractiveMode:
             else:
                 output = event.get("output", "")
                 if output:
-                    self._chat_log.add_system(output)
+                    if command is not None:
+                        command.display.set_result(output)
+                    else:
+                        self._chat_log.add_system(output)
             if event.get("exit"):
                 self._request_exit()
                 return
