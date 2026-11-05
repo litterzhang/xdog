@@ -10,6 +10,17 @@ project follows [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- Resume bounded GitHub collection after long observation gaps or clock regression
+  without rebaselining. Retain detector history and known active runs; persist
+  bounded first/latest coverage-gap evidence separately from current acquisition
+  health across requests and daemon restarts. Recovery does not claim complete backfill.
+
+- Keep Eyes observations running through recoverable ACP enqueue disconnects.
+  Reconnect with bounded backoff to the verified original destination, preserve
+  immutable delivery IDs and cursors, and distinguish transport degradation from
+  explicit user pause. Same-ID-safe outboxes can recover across daemon restart;
+  changed bindings, invalid receipts and unknown prompt effects remain fenced.
+
 - Replace Claw's XHS HTTP-backend adapter with the optional, pinned xiaohongshu-cli
   Python dependency. Keep account-scoped credentials, explicit isolated QR login,
   off-loop SDK calls, bounded mention cursors and exact original reply targets;

@@ -81,14 +81,14 @@ async def test_malformed_ack_is_unknown_and_never_model_success(tmp_path,mode):
     try:
         await handler.start()
         result = await handler.deliver(delivery())
-        assert result.status=='outcome-unknown' and result.retry_on_resume
+        assert result.status=='outcome-unknown' and not result.retry_on_resume
         assert (await handler.deliver(delivery('must-not-pass'))).status=='outcome-unknown'
     finally:
         await handler.close()
 
 
 @pytest.mark.parametrize('explicit_cwd', [False, True])
-async def test_ack_loss_requires_explicit_same_store_reconnect_and_same_message_id(tmp_path, explicit_cwd):
+async def test_ack_loss_retries_only_the_original_store_and_message_id(tmp_path, explicit_cwd):
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path/'peer.jsonl'
@@ -97,12 +97,12 @@ async def test_ack_loss_requires_explicit_same_store_reconnect_and_same_message_
     try:
         await handler.start()
         result = await handler.deliver(delivery('stable'))
-        assert result.status=='outcome-unknown' and result.retry_on_resume
-        assert (await handler.deliver(delivery('later'))).status=='outcome-unknown'
+        assert result.status=='retry'
+        assert (await handler.deliver(delivery('later'))).status=='retry'
         assert len([r for r in rows(record) if r['kind']=='initialize'])==1
         assert await handler.resume()  # Explicit data-only reconnect, not execution approval.
         wrong = await handler.deliver(delivery('different'))
-        assert wrong.status=='paused'
+        assert wrong.status=='retry'
         recovered = await handler.deliver(delivery('stable'))
         assert recovered.status=='queued' and recovered.receipt_status=='duplicate'
         assert len([r for r in rows(record) if r['kind']=='stored'])==1
@@ -122,21 +122,21 @@ async def test_resume_cannot_silently_move_to_another_store_or_branch(tmp_path,m
         await handler.start()
         gate.touch()
         result = await handler.deliver(delivery())
-        assert result.status in {'paused','cancelled'}
+        assert result.status in {'failed','cancelled'}
         assert not await handler.resume()
         assert not [r for r in rows(record) if r.get('method')=='xdog/enqueue']
     finally:
         await handler.close()
 
 
-async def test_capacity_refusal_pauses_without_any_prompt_or_authorization(tmp_path):
+async def test_capacity_refusal_is_terminal_without_automatic_retry_or_authorization(tmp_path):
     from xdog.eyes.handlers.acp import AcpHandler
 
     record = tmp_path/'peer.jsonl'
     handler = AcpHandler(replace(enqueue_definition(record,mode='inbox-quota'), cwd=tmp_path))
     try:
         await handler.start()
-        assert (await handler.deliver(delivery())).status=='paused'
+        assert (await handler.deliver(delivery())).status=='failed'
         assert not [r for r in rows(record) if r['kind'] in {'load','prompt'}]
         assert not [r for r in rows(record) if r.get('method')=='xdog/resume']
     finally:
@@ -225,9 +225,15 @@ async def test_real_unix_intake_survives_service_restart_only_for_the_same_store
             await server.aclose()
             replacement = replace(config,inbox_dir=tmp_path/'different') if replace_store else config
             server = await IngressServer.start(replacement)
-            assert (await handler.deliver(delivery('second'))).status=='paused'
-            resumed = await handler.resume()
-            assert resumed is not replace_store
+            assert (await handler.deliver(delivery('second'))).status=='retry'
+            if replace_store:
+                from xdog.eyes.handlers.contracts import HandlerHealthError
+                with pytest.raises(HandlerHealthError, match='binding changed'):
+                    await handler.resume()
+                resumed = False
+            else:
+                resumed = await handler.resume()
+                assert resumed
             if resumed:
                 assert handler.client.inbox_id==namespace
                 assert (await handler.deliver(delivery('second'))).status=='queued'
@@ -248,7 +254,7 @@ async def test_close_settles_an_explicit_reconnect_that_is_still_initializing(tm
     task = None
     try:
         await handler.start()
-        assert (await handler.deliver(delivery())).status=='outcome-unknown'
+        assert (await handler.deliver(delivery())).status=='retry'
         task = asyncio.create_task(handler.resume())
         async with asyncio.timeout(5):
             while len([r for r in rows(record) if r['kind']=='initialize'])<2:

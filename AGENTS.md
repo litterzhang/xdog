@@ -377,6 +377,11 @@ context management, never a replacement task budget.
 
 ### `xdog.eyes`: observation and ACP activation layer
 
+GitHub observation gaps and clock regression do not stop current bounded sampling.
+Source coverage warnings retain first/latest interruption evidence and a count,
+separately from current acquisition/transport errors; success/restart never clears
+past coverage gaps or resets detector history. Recovery is not complete backfill.
+
 Like flow, eyes owns a versioned JSON definition, frozen models, whole-definition
 validation, asynchronous executor, CLI and packaged `eyes` skill.
 Sources collect evidence, detectors emit events, and EventRouter dispatches
@@ -394,6 +399,16 @@ callback connects directly to an explicitly configured private Unix ACP endpoint
 and exact session ID; it does not launch coding CLI or inspect coding registry.
 Stdio is an optional generic third-party ACP transport. Loading a skill does not
 start observation, a model, a receiver or TUI.
+
+Recoverable durable ACP connection faults are `degraded`, never implicit user
+pause. Eyes retains live observation/outbox cursors and reconnects with bounded
+backoff on the existing daemon loop. Explicit stable HandlerSnapshot.binding is
+separate from diagnostic details; actual trusted handler code declares route
+retry safety. Enqueue ACK loss/restart may retry only the same delivery ID and
+payload against the verified original receiver, not replay Agent effects.
+Changed bindings, invalid/refused receipts and unknown prompt effects remain
+needs-review; pause/cancel retire and settle original reconnect work. No Claw or
+Coding recovery adapter is added. See docs/eyes-transport-recovery.md.
 
 Coding's independently managed lightweight ACP ingress forwards live prompts or
 persists negotiated XDOG enqueue messages without constructing AgentSession.

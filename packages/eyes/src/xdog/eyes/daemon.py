@@ -41,6 +41,10 @@ class Active:
     routes: dict[str, str] = field(default_factory=dict)
     source_errors: dict[str, str] = field(default_factory=dict)
     handlers: dict[str, EventHandler] = field(default_factory=dict)
+    handler_errors: dict[str, str] = field(default_factory=dict)
+    delivery_errors: dict[str, str] = field(default_factory=dict)
+    health_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    retries: dict[str, tuple[int, float]] = field(default_factory=dict)
     error: str = ''
     ready: bool = False
 
@@ -86,8 +90,9 @@ class DaemonObservers:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                active.error = str(exc)[:2048]
-                await self.set_state(identifier, 'needs-review', active.error)
+                if self.active.get(identifier) is active:
+                    active.error = str(exc)[:2048]
+                    await self.set_state(identifier, 'needs-review', active.error)
             finally:
                 await asyncio.gather(*(handler.close() for handler in active.handlers.values()),
                                      return_exceptions=True)
@@ -101,35 +106,26 @@ class DaemonObservers:
         definition = _normalized_definition(json.loads(row['content']))
         active.sources = {source.id: 'baselining' for source in definition.sources}
         checkpoint = json.loads(row['checkpoint']) if row['checkpoint'] else None
-        # Never turn uncertain external effects into a fresh baseline or a send.
-        if row['mode'] != 'events' and checkpoint is not None and any(
-                item['inflight'] or item['terminal'] for item in checkpoint['pending'].values()):
-            await self.set_state(identifier, 'needs-review', 'Interrupted/unknown delivery; not replayed')
-            return
         if row['mode'] == 'handlers':
             registry = builtin_handlers()
-            active.handlers = {handler.id: registry.create(handler)
-                               for handler in definition.handlers}
-            connections = [asyncio.create_task(handler.start()) for handler in active.handlers.values()]
-            try:
-                await asyncio.gather(*connections)
-                for name, handler in active.handlers.items():
-                    binding = handler.snapshot().details
-                    binding.pop('connected', None)
-                    encoded = json.dumps(binding, sort_keys=True, allow_nan=False)
-                    def bind(db: Any, name: str = name, encoded: str = encoded) -> None:
-                        previous = db.execute('SELECT binding FROM handler_bindings '
-                            'WHERE registration_id=? AND handler_id=?', (identifier, name)).fetchone()
-                        if previous is not None and previous[0] != encoded:
-                            raise ValueError('Original ACP owner/inbox/branch binding changed; no work was resent')
-                        db.execute('INSERT OR IGNORE INTO handler_bindings VALUES (?,?,?)',
-                                   (identifier, name, encoded))
-                    await self.store.run(bind)
-            except BaseException:
-                for connection in connections:
-                    connection.cancel()
-                await asyncio.gather(*connections, return_exceptions=True)
-                raise
+            active.handlers = {handler.id: registry.create(handler) for handler in definition.handlers}
+        retry_safe = frozenset(route.id for route in definition.routes if row['mode'] == 'events'
+                              or active.handlers[route.handler].snapshot().retry_safe)
+        # Only actual registered handlers can declare same-ID retry safety.
+        # Unknown prompt/custom effects and terminal receipts remain quarantined.
+        if checkpoint is not None and any(item['terminal'] or item['inflight'] and key not in retry_safe
+                                          for key, item in checkpoint['pending'].items()):
+            await self.set_state(identifier, 'needs-review', 'Interrupted/unknown delivery; not replayed')
+            return
+        connections = [asyncio.create_task(self._connect(identifier, active, name, handler))
+                       for name, handler in active.handlers.items()]
+        try:
+            await asyncio.gather(*connections)
+        except BaseException:
+            for connection in connections:
+                connection.cancel()
+            await asyncio.gather(*connections, return_exceptions=True)
+            raise
         routes = {route.id: route for route in definition.routes}
 
         def emit(event: RuntimeEvent) -> None:
@@ -142,6 +138,10 @@ class DaemonObservers:
                 active.source_errors[event.source_id] = event.error
             elif event.kind == 'watching':
                 active.source_errors.pop(event.source_id, None)
+            elif event.kind == 'delivery_retry':
+                active.delivery_errors[event.route_id] = event.error
+            elif event.kind in {'delivery_succeeded', 'delivery_queued'}:
+                active.delivery_errors.pop(event.route_id, None)
             elif event.error:
                 active.error = event.error
 
@@ -165,7 +165,10 @@ class DaemonObservers:
                     if acknowledged:
                         return DeliveryResult('succeeded')
                     await self.sleep(.1)
-            return await active.handlers[routes[value.route_id].handler].deliver(value)
+            name = routes[value.route_id].handler
+            if name in active.handler_errors:
+                return DeliveryResult('retry', active.handler_errors[name])
+            return await active.handlers[name].deliver(value)
 
         def validate(value: Delivery) -> None:
             if row['mode'] == 'handlers':
@@ -176,15 +179,56 @@ class DaemonObservers:
             emit=emit, clock=self.clock, sleep=self.sleep, cancel=active.cancel,
             resume=active.resume, validate=validate,
             checkpoint=checkpoint, save=lambda value: self.store.checkpoint(identifier, value),
-            replay_safe=row['mode'] == 'events', wall_clock=self.wall_clock,
+            retry_safe_routes=retry_safe, wall_clock=self.wall_clock,
             event_reader=lambda source, after: self.intake.next(identifier, source, after))
+
+    def _retry(self, active: Active, name: str, error: str) -> float:
+        attempt = active.retries.get(name, (0, 0.0))[0] + 1
+        delay = min(30.0, .25 * 2.0 ** min(attempt - 1, 7))
+        active.retries[name] = attempt, self.clock() + delay
+        active.handler_errors[name] = error[:2048]
+        return delay
+
+    async def _bind(self, identifier: str, active: Active, name: str, handler: EventHandler) -> None:
+        encoded = json.dumps(handler.snapshot().binding, sort_keys=True, allow_nan=False)
+        def bind(db: Any) -> None:
+            if self.active.get(identifier) is not active or self.closing:
+                raise RuntimeError('Original handler owner retired during connection')
+            previous = db.execute('SELECT binding FROM handler_bindings '
+                'WHERE registration_id=? AND handler_id=?', (identifier, name)).fetchone()
+            if previous is not None and previous[0] != encoded:
+                raise ValueError('Original handler binding changed; no work was resent')
+            db.execute('INSERT OR IGNORE INTO handler_bindings VALUES (?,?,?)', (identifier, name, encoded))
+        await self.store.run(bind)
+        if self.active.get(identifier) is not active:
+            raise RuntimeError('Original handler owner retired during connection')
+
+    async def _connect(self, identifier: str, active: Active, name: str, handler: EventHandler) -> None:
+        first = True
+        while self.active.get(identifier) is active and not self.closing:
+            try:
+                if first:
+                    first = False
+                    await handler.start()
+                elif not await handler.resume():
+                    raise HandlerHealthError('Handler connection is still unavailable', recoverable=True)
+                await self._bind(identifier, active, name, handler)
+                active.handler_errors.pop(name, None)
+                active.retries.pop(name, None)
+                return
+            except HandlerHealthError as exc:
+                if not exc.recoverable:
+                    raise
+                await self.sleep(self._retry(active, name, str(exc)))
 
     async def halt(self, identifier: str) -> None:
         active = self.active.pop(identifier, None)
-        if active is not None and active.task is not None:
+        if active is not None:
             active.cancel.set()
-            active.task.cancel()
-            await asyncio.gather(active.task, return_exceptions=True)
+            tasks = [*active.health_tasks.values(), *([active.task] if active.task is not None else [])]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def dispatch(self, action: str, body: dict[str, JsonValue]) -> tuple[str, dict[str, JsonValue]]:
         if action == 'daemon-status':
@@ -335,8 +379,8 @@ class DaemonObservers:
             if active is None:
                 state = 'needs-start'
             elif active.error:
-                state = 'paused'
-            elif active.source_errors:
+                state = 'needs-review'
+            elif active.source_errors or active.handler_errors or active.delivery_errors:
                 state = 'degraded'
             elif active.ready and all(value in {'watching', 'completed'} for value in active.sources.values()):
                 state = 'watching'
@@ -349,10 +393,18 @@ class DaemonObservers:
                 'key': row['key'], 'state': state,
                 'next_due': min(deadlines) if deadlines else None,
                 'duplicate': False, 'sources': active.sources if active else {},
-                'routes': active.routes if active else {}, 'error': (active.error if active else '') or row['error'],
+                'routes': active.routes if active else {},
+                'error': (active.error or next(iter(active.handler_errors.values()), '')
+                          or next(iter(active.delivery_errors.values()), '') if active else '') or row['error'],
+                'handler_health': {name: {'state': 'reconnecting' if name in active.handler_errors else 'ready',
+                    'error': active.handler_errors.get(name, ''),
+                    'retry_after_seconds': max(0.0, active.retries.get(name, (0, 0.0))[1] - self.clock())}
+                    for name in active.handlers} if active else {},
                 'source_health': {key: {field: value.get(field) for field in
-                    ('last_success', 'last_status', 'failures', 'next_poll_at', 'gap', 'error')}
+                    ('last_success', 'last_status', 'failures', 'next_poll_at', 'gap', 'coverage_gap', 'error')}
                     for key, value in (checkpoint or {}).get('remote_sources', {}).items()},
+                'coverage_warnings': {key: 'Historical coverage incomplete; see source_health.coverage_gap'
+                    for key, value in (checkpoint or {}).get('remote_sources', {}).items() if value.get('gap')},
                 'source_errors': dict(active.source_errors) if active else {}}
 
     async def events(self, owner: str, body: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -391,28 +443,47 @@ class DaemonObservers:
         await self.store.run(commit)
         return {'acknowledged': sequence}
 
+    async def _check_handler(self, identifier: str, active: Active, name: str, handler: EventHandler) -> None:
+        try:
+            async with asyncio.timeout(12):
+                if name in active.handler_errors:
+                    if not await handler.resume():
+                        raise HandlerHealthError('Handler connection is still unavailable', recoverable=True)
+                    await self._bind(identifier, active, name, handler)
+                else:
+                    await handler.check()
+            if self.active.get(identifier) is active:
+                active.handler_errors.pop(name, None)
+                active.retries.pop(name, None)
+        except Exception as exc:
+            # Connection IO never holds the admission lock. A retired owner may
+            # neither reattach nor overwrite an explicit pause/cancel afterward.
+            async with self.lock:
+                if self.active.get(identifier) is not active:
+                    return
+                if isinstance(exc, HandlerHealthError) and exc.recoverable:
+                    self._retry(active, name, str(exc))
+                    return  # Keep observation, checkpoints and immutable deliveries alive.
+                active.error = str(exc)[:2048]
+                active.ready = False
+                if active.task is not None:
+                    active.task.cancel()
+                    await asyncio.gather(active.task, return_exceptions=True)
+                await self.set_state(identifier, 'needs-review', active.error)
+
     async def health(self) -> None:
+        tasks = []
         for identifier, active in tuple(self.active.items()):
-            if not active.ready:
+            if not active.ready or active.task is None or active.task.done():
                 continue
-            for handler in active.handlers.values():
-                try:
-                    async with asyncio.timeout(2):
-                        await handler.check()
-                except Exception as exc:
-                    # Receiver health IO must not hold the admission lock. Only
-                    # the original active owner may publish its failure later.
-                    async with self.lock:
-                        if self.active.get(identifier) is not active:
-                            break
-                        active.error = str(exc)[:2048]
-                        if active.task is not None:
-                            active.task.cancel()
-                            await asyncio.gather(active.task, return_exceptions=True)
-                            await self.set_state(identifier,
-                                'paused' if isinstance(exc, HandlerHealthError) and exc.recoverable else 'needs-review',
-                                active.error)
-                    break
+            for name, handler in active.handlers.items():
+                previous = active.health_tasks.get(name)
+                if previous is not None and not previous.done() or self.clock() < active.retries.get(name, (0, 0.0))[1]:
+                    continue
+                task = asyncio.create_task(self._check_handler(identifier, active, name, handler))
+                active.health_tasks[name] = task
+                tasks.append(task)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def aclose(self) -> None:
         self.closing = True

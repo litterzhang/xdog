@@ -207,7 +207,7 @@ async def test_five_offline_callbacks_automatically_form_one_tui_batch_and_survi
 
 
 @pytest.mark.parametrize('replace_namespace', [False, True], ids=['same-inbox', 'replacement-inbox'])
-async def test_receiver_disconnect_explicit_resume_fences_original_inbox_namespace(
+async def test_receiver_disconnect_automatically_reconnects_only_to_original_inbox_namespace(
     tmp_path, observer_data, eyes_control, replace_namespace,
 ):
     from xdog.coding.acp.ingress import IngressConfig, IngressServer
@@ -227,25 +227,24 @@ async def test_receiver_disconnect_explicit_resume_fences_original_inbox_namespa
         try:
             assert (await control.status(identifier))['state']=='watching'
             await ingress.aclose()
-            paused = await wait_for_state(control, identifier, 'paused')
-            assert paused['error']
+            degraded = await wait_for_state(control, identifier, 'degraded')
+            assert degraded['error']
             (tmp_path/'src'/'a.py').write_text('while receiver offline')
             await asyncio.sleep(0.2)
             assert not store.records(data.session_id,tmp_path)
             replacement = InboxStore(manager._dir,tmp_path/'replacement-inbox') if replace_namespace else store
             ingress = await IngressServer.start(IngressConfig(manager._dir,replacement.root,config.address))
-            await control.resume(identifier)
             if replace_namespace:
                 # A socket path and session label are not the original inbox.
                 # Resume is admitted asynchronously; status reports quarantine.
                 quarantined = await wait_for_state(control, identifier, 'needs-review')
-                assert 'Original ACP owner/inbox/branch binding changed' in quarantined['error']
+                assert 'binding changed' in quarantined['error']
                 with pytest.raises(ValueError, match='cannot be resumed or replayed'):
                     await control.resume(identifier)
                 assert not store.records(data.session_id,tmp_path)
                 assert not replacement.records(data.session_id,tmp_path)
             else:
-                restored = await control.wait_ready(identifier)
+                restored = await wait_for_state(control, identifier, 'watching')
                 assert restored['registration_id']==identifier and restored['state']=='watching'
                 await wait_for(lambda:len(store.records(data.session_id,tmp_path))==1)
                 row, = store.records(data.session_id,tmp_path)
@@ -304,7 +303,7 @@ async def test_receiver_disconnect_during_prompt_never_replays_unknown_effects(
             changed.write_text('accepted before disconnect')
             await wait_for(entered.is_set)
             await ingress.aclose()
-            unknown = await wait_for_state(control, identifier, 'paused')
+            unknown = await wait_for_state(control, identifier, 'needs-review')
             assert 'never blind retry' in unknown['error']
             # Coding's standard prompt is cancelled on transport loss, unlike
             # durable enqueue. Cancellation cannot undo already-started effects,
@@ -318,7 +317,7 @@ async def test_receiver_disconnect_during_prompt_never_replays_unknown_effects(
                 await control.resume(identifier)
             duplicate = await control.start(spec,wait_ready=False)
             assert duplicate['duplicate'] and duplicate['registration_id']==identifier
-            assert duplicate['state']=='paused'
+            assert duplicate['state']=='needs-review'
             changed.write_text('must not trigger a replay')
             await asyncio.sleep(0.25)
             assert len(calls)==1 and len(store.records(coding_session.session_id,tmp_path))==1

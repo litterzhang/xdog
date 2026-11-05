@@ -193,7 +193,7 @@ async def test_unknown_external_send_is_not_replayed_on_resume_or_restart(
             await asyncio.Event().wait()  # unknown outcome when daemon shuts down
 
         def snapshot(self):
-            return HandlerSnapshot('ready', {'inbox_id': 'original'})
+            return HandlerSnapshot('ready', {'inbox_id': 'original'}, binding={'inbox_id': 'original'})
 
         async def check(self):
             pass
@@ -373,7 +373,8 @@ async def test_changed_original_handler_binding_cannot_acquire_a_saved_observer(
             raise AssertionError('Retargeted handlers must not send anything')
 
         def snapshot(self):
-            return HandlerSnapshot('ready', {'inbox_id': self.inbox, 'branch_id': 'original-branch'})
+            return HandlerSnapshot('ready', {'inbox_id': self.inbox, 'branch_id': 'original-branch'},
+                                   binding={'inbox_id': self.inbox, 'branch_id': 'original-branch'})
 
         async def close(self):
             pass
@@ -458,7 +459,7 @@ async def test_slow_activation_and_restart_do_not_block_control_and_are_fenced(
             closes.append(self)
 
         def snapshot(self):
-            return HandlerSnapshot('ready', {'inbox': 'original'})
+            return HandlerSnapshot('ready', {'inbox': 'original'}, binding={'inbox': 'original'})
 
         async def check(self):
             raise AssertionError('Health must not run on a half-started receiver')
@@ -600,7 +601,7 @@ async def test_late_health_failure_cannot_override_pause_or_cancel(daemon, tmp_p
             pass
 
         def snapshot(self):
-            return HandlerSnapshot('ready', {})
+            return HandlerSnapshot('ready', {}, binding={})
 
         async def close(self):
             pass
@@ -643,7 +644,7 @@ async def test_slow_saved_receiver_does_not_block_independent_saved_registration
             await asyncio.Event().wait()
 
         def snapshot(self):
-            return HandlerSnapshot('ready', {})
+            return HandlerSnapshot('ready', {}, binding={})
 
         async def close(self):
             pass
@@ -806,3 +807,83 @@ async def test_remote_failure_is_degraded_not_paused_and_recovery_clears_source_
     finally:
         server.close()
         await server.wait_closed()
+
+
+async def test_github_gap_resumes_original_monitor_without_rebaseline_and_survives_restart(
+    daemon, tmp_path, observer_data, monkeypatch,
+):
+    """Real daemon/checkpoint/detectors; bounded GitHub HTTP fixture, no hosted API."""
+    import httpx
+    from xdog.eyes.sources.remote import RemoteSampler
+
+    from packages.eyes.tests.test_github_source import NOW, issue
+    from packages.eyes.tests.test_http_source import Transport
+    from packages.eyes.tests.test_remote_config import external
+
+    boot, client, current, _ = daemon
+    wall = [NOW]
+    rows = [issue(1), issue(2)]
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json=rows)
+
+    monkeypatch.setattr('xdog.eyes.executor.RemoteSampler', lambda: RemoteSampler(Transport(handle)))
+    current().daemon.wall_clock = lambda: wall[0]
+    control = await client('github-gap')
+    data = external(observer_data, {'id': 'outside', 'type': 'github', 'repository': 'o/r',
+                                    'resource': 'issues', 'poll_interval_seconds': 1})
+    data['handlers'] = [{'id': 'notify', 'type': 'events'}]
+    result = await control.start(definition_data(parse(data, base_dir=tmp_path)), delivery='events', key='repo')
+    identifier = result['registration_id']
+    assert result['state'] == 'watching' and not result['coverage_warnings']
+    assert await control.events() == []  # Only the actual first sample establishes a baseline.
+
+    async def restart():
+        old = current()
+        old.stop.set()
+        async with asyncio.timeout(5):
+            while old._lease >= 0:
+                await asyncio.sleep(.01)
+        await boot(wall_clock=lambda: wall[0])
+        return await client('github-gap')
+
+    # Simulate a multi-day shutdown. Keep one unchanged record, change an existing
+    # record, and add another: restoration must compare against the original baseline.
+    wall[0] += 3*86400
+    rows[:] = [issue(1, title='edited'), issue(2), issue(3)]
+    control = await restart()
+    events = await control.events(wait=5)
+    assert len(events) == 1 and events[0]['registration_id'] == identifier
+    changes = events[0]['delivery']['events']
+    assert {(item['type'], item['evidence'][0]['key']) for item in changes} == {
+        ('record.updated', '1'), ('record.created', '3')}
+    updated = next(item for item in changes if item['type'] == 'record.updated')
+    assert json.loads(updated['evidence'][0]['before'])['title'] == '用户反馈'
+    assert json.loads(updated['evidence'][0]['after'])['title'] == 'edited'
+    await control.ack(events[0]['sequence'])
+    result = await control.status(identifier)
+    assert result['state'] == 'watching' and not result['source_errors']
+    assert result['coverage_warnings']['outside']
+    health = result['source_health']['outside']
+    assert health['last_success'] == wall[0] and health['gap'] and not health['error']
+    coverage = health['coverage_gap']
+    assert coverage['count'] == 1 and coverage['first']['previous_success'] == NOW
+
+    # Another restart must retain the warning but neither report an acquisition
+    # failure nor replay records already committed to the detector/outbox.
+    wall[0] += 120
+    count = len(requests)
+    control = await restart()
+    async with asyncio.timeout(5):
+        while True:
+            result = await control.status(identifier)
+            if (len(requests) > count and result['source_health']['outside']['last_success'] == wall[0]
+                    and result['state'] == 'watching'):
+                break
+            await asyncio.sleep(.01)
+    assert result['coverage_warnings'] and not result['source_errors']
+    assert result['source_health']['outside']['coverage_gap'] == coverage
+    assert await control.events() == []
+    await control.cancel(identifier)

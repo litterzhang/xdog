@@ -92,24 +92,13 @@ def project(row: Any, source: GithubSourceDef, secret: str | None) -> Record | N
 async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTransport, *, now: float) -> PollResult:
     secret = credential(source)
     last = state.get("last_success")
-    if (
+    # A missed window is a coverage limitation, not a reason to stop acquiring.
+    # Keep the existing detector history and only query the configured finite window.
+    missed_window = (
         source.resource != "releases"
         and isinstance(last, (float, int))
         and (now - last > source.lookback_seconds or last > now)
-    ):
-        return PollResult(
-            RecordSnapshot(
-                (),
-                now,
-                healthy=False,
-                complete=False,
-                valid=False,
-                gap=True,
-                error="Observation gap/clock regression exceeds reliable window; explicitly rebaseline",
-            ),
-            {**state, "gap": True},
-            source.poll_interval_seconds,
-        )
+    )
     headers = {"accept": "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "xdog-eyes"}
     if secret:
         headers["authorization"] = "Bearer " + secret
@@ -122,7 +111,7 @@ async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTr
     }
     floor = (
         max(now - source.lookback_seconds, float(last) - source.overlap_seconds)
-        if last is not None
+        if last is not None and last <= now
         else (now - source.lookback_seconds)
     )
     # Actions has no updated-since query. Monitor a rolling created window and
@@ -225,6 +214,27 @@ async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTr
                     active.add(identifier)
             if len(records) > source.max_records:
                 raise SourceError("GitHub max_records exceeded; cursor retained")
+    coverage = state.get("coverage_gap")
+    if missed_window:
+        assert isinstance(last, (float, int))
+        entry = {
+            "reason": "clock_regression" if last > now else "observation_gap",
+            "previous_success": last,
+            "resumed_at": now,
+            "window_start": floor,
+        }
+        # Bounded audit summary: preserve the first gap and latest gap, with a count.
+        # Advancing last_success prevents the same interruption being counted again.
+        coverage = {
+            "count": coverage["count"] + 1 if coverage is not None else 1,
+            "first": coverage["first"] if coverage is not None else entry,
+            "latest": entry,
+        }
+    gap = bool(state.get("gap")) or coverage is not None
+    next_state = {"last_success": now, "failures": 0, "active_runs": sorted(active), "last_status": 200,
+                  "gap": gap}
+    if coverage is not None:
+        next_state["coverage_gap"] = coverage
     # Incremental results are not authoritative membership sets. No inferred deletion.
     return PollResult(
         RecordSnapshot(
@@ -234,7 +244,8 @@ async def poll(source: GithubSourceDef, state: dict[str, Any], transport: HttpTr
             status_code=200,
             window_start=floor if source.resource != "releases" else None,
             retain_current=source.resource == "releases",
+            gap=gap,
         ),
-        {"last_success": now, "failures": 0, "active_runs": sorted(active), "last_status": 200},
+        next_state,
         source.poll_interval_seconds,
     )

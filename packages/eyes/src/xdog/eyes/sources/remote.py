@@ -51,7 +51,7 @@ class RemoteSampler:
             **result.state,
             "next_poll_at": finished_at + result.delay,
             "error": result.snapshot.error,
-            "gap": result.snapshot.gap,
+            "gap": bool(result.state.get("gap")) or result.snapshot.gap,
         }
         return PollResult(result.snapshot, state, result.delay)
 

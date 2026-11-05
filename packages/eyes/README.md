@@ -76,8 +76,38 @@ A coding target persists live prompts through the same Inbox and
 waits for their actual batch result. Inactive prompt targets still fail rather
 than silently enqueueing offline. Generic ACP servers keep their own policy.
 A lost prompt response is outcome-unknown and is never blindly resent. Enqueue
-can explicitly retry the original ID/content after checking the same persistent
-inbox namespace/project/branch; reconnect never approves model execution.
+automatically reconnects and can retry the original ID/content after checking
+the same persistent inbox namespace/project/branch; reconnect never approves
+model execution.
+
+### Connection faults are not user pauses
+
+`paused` means an explicit `pause` command. An unavailable durable ACP receiver
+keeps the registration `running` and reports `degraded`, with per-handler
+`handler_health` diagnostics and `retry_after_seconds`. Eyes reconnects with
+bounded exponential backoff (0.25–30 seconds) on its existing owned event loop.
+A live observation continues sampling and retaining its original checkpoint and
+bounded immutable outbox/backlog; it does not re-register or establish a new
+baseline merely because a gateway restarted. Overflow remains explicit and
+never drops evidence. Cold activation still waits for handlers before beginning
+new observation/schedules; an offline receiver does not block the control plane
+or other registrations.
+
+Reconnect verifies the original handler binding. Durable enqueue ACK loss can
+retry only the identical delivery/message ID and payload against that verified
+Inbox namespace/branch/directory. Receiver deduplication handles an already
+accepted message; retry never grants Agent execution permission. Safe in-flight
+outboxes can survive daemon restart using their original IDs. Generic prompt
+outcomes, malformed receipts, explicit receiver refusals, binding changes and
+terminal/overflowed work remain `needs-review`, never blind side-effect replay.
+Explicit user pause/cancel and daemon shutdown cancel/join the original reconnect
+operations; a late completion cannot release that control or retarget delivery.
+
+Registered handlers expose an explicit stable `HandlerSnapshot.binding`, separate
+from diagnostic `details`. Its `retry_safe` flag defaults false and is declared
+by actual trusted handler code, never inferred from JSON labels. Only the ACP
+enqueue implementation declares durable same-identity retry safety. The generic
+executor receives route-level retry safety and knows no ACP/Claw/Coding policy.
 
 ## Definition paths and ACP target directories
 
@@ -145,8 +175,13 @@ now covered below. PR review, browser, public webhook and shell remain unsupport
 Sources return candidate state; the original executor commits source cursor,
 detector state and immutable pending delivery together before handler IO. Partial
 pages, invalid selection, oversized responses and timeouts never imply empty data
-or deletion. GitHub incremental windows never infer removals; unfillable gaps and
-capacity limits are explicit, not silently rebaselined. First content is a baseline,
+or deletion. GitHub incremental windows never infer removals. After a long gap or
+clock regression, collection resumes automatically within the configured lookback,
+retaining detector history and known active runs, not silently rebaselining. Status
+separates current acquisition errors from historical `coverage_warnings`:
+`source_health.gap` remains true and `coverage_gap` retains bounded first/latest
+interruption evidence plus a count, including after daemon restart. This is not
+proof of complete backfill. Capacity and pagination limits remain explicit errors. First content is a baseline,
 not a historical notification storm. Actions watches a bounded created window plus
 known active runs, not every later rerun of an arbitrarily old completed run.
 
@@ -278,7 +313,7 @@ contents are retained. Registration pause skips scheduled deadlines rather than
 replaying missed ticks; accepted pending evidence remains intact. Cancel is
 idempotent and does not delete already committed events or destination inputs.
 
-External in-flight/unknown delivery after interruption is quarantined for review,
+Non-idempotent in-flight/unknown delivery after interruption is quarantined for review,
 never automatically replayed. The original ACP definition and pinned inbox/branch
 or owner-generation binding must still match on recovery. Proven-not-sent delivery
 may retry; a changed receiver cannot acquire an old outbox. Events-mode publication

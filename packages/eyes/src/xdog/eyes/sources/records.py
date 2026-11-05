@@ -83,7 +83,7 @@ class RecordSnapshot:
     unchanged: bool = False
     status_code: int | None = None
     error: str = ""
-    gap: bool = False
+    gap: bool = False  # Historical coverage warning, independent of current acquisition health/validity.
     valid: bool = True
     window_start: float | None = None
     stream: bool = False  # Independent inputs: no initial baseline suppression or deletion inference.

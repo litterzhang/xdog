@@ -10,6 +10,7 @@ from xdog.eyes.deliveries import Delivery
 from xdog.eyes.events import DeliveryResult
 from xdog.eyes.handlers.acp_payload import enqueue_parameters, prompt_parameters
 from xdog.eyes.handlers.contracts import HandlerHealthError, HandlerSnapshot
+from xdog.eyes.local_control import JsonValue
 from xdog.eyes.models import AcpHandlerDef
 
 
@@ -40,6 +41,13 @@ class AcpHandler:
     async def start(self) -> None:
         try:
             await self.client.connect()
+        except (ValueError, UnicodeError, RequestError):
+            self.state = "retired"
+            raise
+        except Exception as exc:
+            self.state = "reconnecting"
+            self._health_failed = True
+            raise HandlerHealthError(str(exc), recoverable=self.definition.delivery == 'enqueue') from exc
         except BaseException:
             self.state = "closed"
             raise
@@ -51,8 +59,8 @@ class AcpHandler:
         async with self._serial:
             if self._halted is not None:
                 return self._halted
-            if self.state == "new":
-                return DeliveryResult("not-sent", "ACP handler is not connected")
+            if self.state in {"new", "reconnecting"}:
+                return DeliveryResult("retry", "ACP handler is reconnecting; original delivery retained")
             if self._closed or self.state == "closed":
                 return DeliveryResult("cancelled", "ACP connection closed; stop/rebaseline")
             if self.definition.delivery == 'enqueue':
@@ -105,15 +113,19 @@ class AcpHandler:
         except (ValueError, TypeError, UnicodeError) as exc:
             return DeliveryResult('failed', 'Invalid ACP enqueue: ' + str(exc))
         if self._pending_enqueue is not None and self._pending_enqueue != (delivery.id, canonical):
-            return DeliveryResult('paused', 'Explicit retry must retain the original delivery ID and content')
+            return DeliveryResult('retry', 'Waiting for the original delivery ID and content to settle')
         self._pending_enqueue = delivery.id, canonical
         try:
             async with asyncio.timeout(10):
                 await self.client.inbox_status()
+        except (ValueError, UnicodeError, RequestError) as exc:
+            self.state = 'retired'
+            self._halted = DeliveryResult('failed', 'Inbox binding/refusal: ' + str(exc))
+            return self._halted
         except Exception as exc:
-            self.state = 'paused'
-            self._halted = DeliveryResult(
-                'paused', 'Inbox scope/connection unavailable: ' + str(exc), retry_on_resume=True)
+            self.state = 'reconnecting'
+            self._health_failed = True
+            self._halted = DeliveryResult('retry', 'Inbox connection unavailable: ' + str(exc))
             return self._halted
         self.state = 'processing'
         try:
@@ -126,28 +138,32 @@ class AcpHandler:
             self.state = 'closed'
             raise
         except RequestError as exc:
-            self.state = 'paused'
-            self._halted = DeliveryResult('paused', 'Enqueue refused; inspect before explicit retry: ' + str(exc),
-                                          retry_on_resume=True)
+            self.state = 'retired'
+            self._halted = DeliveryResult('failed', 'Enqueue refused; no automatic retry: ' + str(exc))
+            return self._halted
+        except (ValueError, UnicodeError) as exc:
+            self.state = 'outcome-unknown'
+            self._halted = DeliveryResult('outcome-unknown', 'Invalid enqueue receipt: ' + str(exc))
             return self._halted
         except Exception as exc:
-            self.state = 'outcome-unknown'
-            self._halted = DeliveryResult('outcome-unknown', str(exc) + '; explicit same-ID retry only',
-                                          retry_on_resume=True)
+            self.state = 'reconnecting'
+            self._health_failed = True
+            self._halted = DeliveryResult('retry', str(exc) + '; retry only the original message ID')
             return self._halted
         self.state = 'ready'
         self._pending_enqueue = None
         return DeliveryResult('queued', receipt_status=receipt['status'], message_state=receipt['message_state'])
 
     async def _resume_enqueue(self, *, allow_idle: bool = False) -> bool:
-        if self._closed or self._pending_enqueue is None and not allow_idle or self.state == 'processing':
+        if (self._closed or self._pending_enqueue is None and not allow_idle
+                or self.state in {'processing', 'retired', 'outcome-unknown'}):
             return False
         async with self._resuming:
             try:
                 async with asyncio.timeout(10):
                     await self.client.inbox_status()
-            except (ValueError, UnicodeError):
-                return False  # An accessible but different store/branch is never silently followed.
+            except (ValueError, UnicodeError, RequestError) as exc:
+                raise HandlerHealthError(str(exc)) from exc
             except Exception:
                 old = self.client
                 await old.close()
@@ -155,15 +171,18 @@ class AcpHandler:
                     self.definition.connection, self.definition.session, old.cwd, delivery='enqueue')
                 try:
                     await replacement.connect()
-                    if (replacement.inbox_id, replacement.branch_id) != self._inbox_scope:
-                        await replacement.close()
-                        return False
+                    scope = replacement.inbox_id, replacement.branch_id
+                    if self._inbox_scope is not None and scope != self._inbox_scope:
+                        raise ValueError('Original ACP inbox/branch binding changed; no work was resent')
                 except BaseException as exc:
                     await replacement.close()
                     if isinstance(exc, asyncio.CancelledError):
                         raise
+                    if isinstance(exc, (ValueError, UnicodeError, RequestError)):
+                        raise HandlerHealthError(str(exc)) from exc
                     return False
                 self.client = replacement
+                self._inbox_scope = scope
             if self._closed:
                 await self.client.close()
                 return False
@@ -181,25 +200,34 @@ class AcpHandler:
             raise ValueError('ACP delivery exceeds capacity; evidence was not truncated')
 
     def snapshot(self) -> HandlerSnapshot:
-        return HandlerSnapshot(self.state, {
+        binding: dict[str, JsonValue] = {
             'session': self.definition.session, 'delivery': self.definition.delivery,
-            'connected': self.client.connected, 'owner_generation': self.owner_generation,
-            'inbox_id': self.client.inbox_id, 'branch_id': self.client.branch_id})
+            'owner_generation': self.owner_generation,
+            'inbox_id': self.client.inbox_id, 'branch_id': self.client.branch_id}
+        return HandlerSnapshot(self.state, {**binding, 'connected': self.client.connected},
+                               binding=binding, retry_safe=self.definition.delivery == 'enqueue')
 
     async def check(self) -> None:
         if self.state in {'processing', 'outcome-unknown', 'closed'}:
             return
         try:
+            if self.state == 'retired':
+                raise ValueError('ACP target binding or request was rejected')
             if not self.client.connected:
-                raise ConnectionError('ACP connection ended; explicit reconnect/rebaseline required')
+                raise ConnectionError('ACP connection ended; reconnecting to the original target')
+            if self.state == 'reconnecting':
+                raise ConnectionError('ACP enqueue requires same-target reconnect')
             if self.definition.delivery == 'enqueue':
-                await self.client.inbox_status()
+                async with asyncio.timeout(2):
+                    await self.client.inbox_status()
             elif self.owner_generation is not None and await self.client.generation() != self.owner_generation:
                 raise ValueError('ACP owner generation changed')
             self._health_failed = False
         except Exception as exc:
             self._health_failed = True
-            raise HandlerHealthError(str(exc), recoverable=self.definition.delivery == 'enqueue') from exc
+            recoverable = self.definition.delivery == 'enqueue' and not isinstance(
+                exc, (ValueError, UnicodeError, RequestError))
+            raise HandlerHealthError(str(exc), recoverable=recoverable) from exc
 
     async def resume(self) -> bool:
         """Recover a data connection; never request permission or grant model credit."""

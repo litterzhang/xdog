@@ -40,8 +40,14 @@ Do not create observations merely because these examples or this skill were read
   notices matter; source errors alone are status, not automatic Agent messages.
 - GitHub uses bounded lookback and overlap. It is not a complete audit log. Actions
   follows a created window and known active runs, not arbitrary old completed reruns.
-  A persisted gap or capacity error requires explicit scope/rebaseline decisions,
-  not deleting journals or blindly retrying. No changes should consume model calls.
+  After downtime beyond lookback or clock regression, sampling automatically resumes
+  within the configured window, retaining the existing detector history and known
+  active runs. `gap=true` and `coverage_gap` persist first/latest interruption evidence
+  plus a count; `coverage_warnings` is separate from current acquisition errors.
+  Healthy polling does not prove missed history was recovered. Historical backfill
+  needs an explicit bounded scope; do not delete journals or silently rebaseline.
+  Capacity/pagination errors still retain the cursor and require scope/capacity decisions.
+  No changes should consume model calls.
 - Optional `bearer_env` names a variable in the **daemon environment**; never put
   tokens in JSON, URLs, prompts or shell arguments. Do not fetch credentials from
   another application or execute gh login/auth as an implicit fallback. Bearer
@@ -232,7 +238,22 @@ and statuses regardless of current directory. A definition's accepted snapshot
 is immutable: file edits do not redirect it. Different content needs a new
 key/name. Do not silently rearm cancelled registrations.
 
-### Other tool actions
+#### Recovering transport is not a user decision
+
+For ACP `enqueue`, a receiver disconnect reports `degraded` and reconnects with
+bounded backoff. Inspect `handler_health`; do not ask the user to resume, restart
+or rebaseline just because the transport is temporarily unavailable. The live
+observation retains its baseline/cursors and bounded delivery backlog. An ACK-loss
+retry uses only the same delivery/message ID and verified original destination;
+intake acceptance is not execution or user notification.
+
+`paused` is an explicit user control: never release it automatically. If this
+registration was explicitly paused, use `resume` only under the user's request.
+`needs-review` means an actual binding change, invalid/refused receipt, unknown
+non-idempotent effect or overflow: inspect the recorded cause rather than
+blindly repeating effects, replacing the observer or erasing its history.
+
+## Other tool actions
 
 - `eyes(action="list", owner="my-project-watches")`: daemon registration inventory.
 - `eyes(action="status", owner="my-project-watches", observer_id="RETURNED_ID")`: observation/handler health,

@@ -4,6 +4,7 @@ from dataclasses import replace
 import httpx
 import pytest
 from xdog.eyes.models import GithubSourceDef
+from xdog.eyes.sources.github import utc
 from xdog.eyes.sources.remote import RemoteSampler
 
 from packages.eyes.tests.test_http_source import Transport
@@ -85,14 +86,83 @@ async def test_capacity_is_explicit_failure_not_silent_truncation(limit):
         await sampler.close()
 
 
-async def test_gap_is_reported_without_network_or_watermark_advance():
-    def forbidden(request):
-        pytest.fail('A known unfillable gap must not silently become a new baseline')
-    sampler = RemoteSampler(Transport(forbidden))
+@pytest.mark.parametrize('resource', ['issues', 'issue_comments', 'workflow_runs'])
+@pytest.mark.parametrize('last,reason', [(NOW-90000, 'observation_gap'), (NOW+600, 'clock_regression')])
+async def test_gap_resumes_bounded_acquisition_and_preserves_audit(resource, last, reason):
+    seen = []
+    def handle(request):
+        seen.append(request)
+        rows = [issue()]
+        return httpx.Response(200, json={'total_count': 1, 'workflow_runs': rows}
+                              if resource == 'workflow_runs' else rows)
+    sampler = RemoteSampler(Transport(handle))
     try:
-        result = await sampler.poll(source(), {'last_success': NOW-90000}, now=NOW)
-        assert result.snapshot.gap and not result.snapshot.valid
-        assert result.state['gap'] and result.state['last_success'] == NOW-90000
+        result = await sampler.poll(source(resource), {'last_success': last}, now=NOW)
+        assert result.snapshot.gap and result.snapshot.valid and result.snapshot.healthy
+        assert result.state['last_success'] == NOW and not result.state['error']
+        original = json.loads(json.dumps(result.state))
+        coverage = result.state['coverage_gap']
+        assert coverage['count'] == 1 and coverage['first'] == coverage['latest']
+        assert coverage['first'] == {'reason': reason, 'previous_success': last,
+                                     'resumed_at': NOW, 'window_start': NOW-86400}
+        query = seen[0].url.params
+        expected = ('>=' if resource == 'workflow_runs' else '') + utc(NOW-86400)
+        assert query.get('since', query.get('created')) == expected
+        # A normal subsequent sample (including after restart) must not clear the
+        # historical warning or create a second gap for the same interruption.
+        resumed = await sampler.poll(source(resource), json.loads(json.dumps(result.state)), now=NOW+60)
+        assert resumed.snapshot.healthy and resumed.snapshot.valid and resumed.snapshot.gap
+        assert resumed.state['coverage_gap'] == coverage and resumed.state['last_success'] == NOW+60
+        # A second interruption keeps bounded first/latest evidence rather than
+        # growing an unbounded history or erasing the first gap.
+        again = await sampler.poll(source(resource), resumed.state, now=NOW+100000)
+        assert again.state['coverage_gap']['count'] == 2
+        assert again.state['coverage_gap']['first'] == coverage['first']
+        assert again.state['coverage_gap']['latest']['previous_success'] == NOW+60
+        assert result.state == original  # caller-owned input was not mutated
+    finally:
+        await sampler.close()
+
+
+@pytest.mark.parametrize('failure', ['http', 'parse', 'capacity'])
+async def test_gap_recovery_failure_retains_watermark_and_prior_coverage(failure):
+    responses = [httpx.Response(200, json=[])]
+    sampler = RemoteSampler(Transport(lambda request: responses.pop(0)))
+    try:
+        initial = await sampler.poll(source(), {'last_success': NOW-90000}, now=NOW)
+        state = json.loads(json.dumps(initial.state))
+        responses.append(httpx.Response(503) if failure == 'http' else
+                         httpx.Response(200, content=b'invalid') if failure == 'parse' else
+                         httpx.Response(200, json=[issue(), issue(2)]))
+        failed = await sampler.poll(source(max_records=1), state, now=NOW+100000)
+        assert not failed.snapshot.valid and not failed.snapshot.healthy
+        assert failed.state['last_success'] == NOW
+        assert failed.state['gap'] and failed.state['coverage_gap'] == initial.state['coverage_gap']
+        assert state == initial.state
+        responses.append(httpx.Response(200, json=[]))
+        recovered = await sampler.poll(source(), failed.state, now=NOW+100060)
+        assert recovered.snapshot.healthy and recovered.state['last_success'] == NOW+100060
+        assert recovered.state['coverage_gap']['count'] == 2
+        assert recovered.state['coverage_gap']['first'] == initial.state['coverage_gap']['first']
+    finally:
+        await sampler.close()
+
+
+async def test_gap_keeps_tracking_old_active_workflow_runs():
+    paths = []
+    def handle(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, json={'total_count': 0, 'workflow_runs': []}
+                              if request.url.path.endswith('/runs') else
+                              issue(9, status='completed', conclusion='success', run_attempt=1))
+    sampler = RemoteSampler(Transport(handle))
+    try:
+        result = await sampler.poll(source('workflow_runs'),
+                                    {'last_success': NOW-90000, 'active_runs': [9]}, now=NOW)
+        assert result.snapshot.healthy and result.snapshot.gap
+        assert [row.key for row in result.snapshot.records] == ['9:1']
+        assert result.state['active_runs'] == []
+        assert paths == ['/repos/o/r/actions/runs', '/repos/o/r/actions/runs/9']
     finally:
         await sampler.close()
 
@@ -177,5 +247,33 @@ async def test_active_run_rate_limit_retains_cursor_and_honors_retry_after():
         result = await sampler.poll(source('workflow_runs'), {'last_success': NOW-60, 'active_runs': [9]}, now=NOW)
         assert not result.snapshot.valid and result.state['last_success'] == NOW-60
         assert result.state['active_runs'] == [9] and result.delay == 900
+    finally:
+        await sampler.close()
+
+
+async def test_failed_first_gap_recovery_cannot_advance_or_rebaseline():
+    responses = [httpx.Response(503), httpx.Response(200, json=[issue()])]
+    sampler = RemoteSampler(Transport(lambda request: responses.pop(0)))
+    original = {'last_success': NOW-90000, 'active_runs': []}
+    try:
+        failed = await sampler.poll(source(), original, now=NOW)
+        assert not failed.snapshot.valid and failed.state['last_success'] == original['last_success']
+        assert 'coverage_gap' not in failed.state  # No successful new collection yet.
+        recovered = await sampler.poll(source(), failed.state, now=NOW+60)
+        assert recovered.snapshot.valid and recovered.snapshot.healthy and recovered.snapshot.gap
+        assert recovered.state['coverage_gap']['first']['previous_success'] == NOW-90000
+        assert recovered.state['coverage_gap']['count'] == 1
+        assert original == {'last_success': NOW-90000, 'active_runs': []}
+    finally:
+        await sampler.close()
+
+
+@pytest.mark.parametrize('age', [0, 60, 86400])
+async def test_success_within_lookback_does_not_invent_coverage_gap(age):
+    sampler = RemoteSampler(Transport(lambda request: httpx.Response(200, json=[])))
+    try:
+        result = await sampler.poll(source(), {'last_success': NOW-age}, now=NOW)
+        assert result.snapshot.healthy and result.snapshot.valid and not result.snapshot.gap
+        assert not result.state['gap'] and 'coverage_gap' not in result.state
     finally:
         await sampler.close()

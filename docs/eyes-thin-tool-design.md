@@ -41,6 +41,13 @@ protocol completion semantics, without an additional watcher. Raw events mode
 retains explicit business ACK and is separate from direct handler delivery.
 Goal's CLI/raw-event consumer remains unchanged and owns only Goal decisions.
 
+Transport recovery stays in Eyes. Recoverable enqueue connection faults report
+`degraded` while retaining the running registration and original source state;
+only explicit management pause sets `paused`. Generic handler binding snapshots
+and trusted same-ID retry declarations keep this independent of Claw/Coding.
+Unknown prompt effects and changed destinations are never silently replayed.
+See `eyes-transport-recovery.md` for recovery, backpressure and ownership fences.
+
 ## Claw
 
 The gateway starts normal private ACP by default, independent of installed

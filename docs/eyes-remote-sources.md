@@ -98,6 +98,10 @@ checkpoint 仍为数据，不允许数据指定导入代码。
 - 首次只建立 lookback 范围基线，不播报历史记录。source 不为“真实用户反馈”做语义判断。
 - Actions 使用 created 滚动窗口，继续单独读取已知未完成 run，直到其结束；重新运行用 attempt 区分。
 - **不承诺检测窗口外已完成老 run 后来才发生的 rerun**。长停机超出 lookback 或时钟倒退时暴露 gap，
+  但不再阻断当前采集：保留原 detector 去重状态与已知 active runs，自动采集配置窗口内的记录。
+  `gap=true` 为持久历史警告，`coverage_gap` 有界保存首次/最近一次中断的原因、原成功时间、
+  恢复时间、查询窗口起点及中断计数；正常轮询、后续请求失败和 daemon 重启都不清除它。
+  时钟倒退时窗口以当前时间计算，不能用未来的旧水位构造 since。恢复不等于已补齐历史，
   不将不完整历史冒充新基线。需要全历史审计/更强实时性时，应后续设计 webhook/event ingress。
 - 严格处理分页；总 max_bytes、max_pages、max_records 是整次采集预算，不是每页预算。
   超预算、后续页失败、循环/不安全链接均不提交部分集合或推进成功水位。
@@ -174,7 +178,9 @@ Retry-After（秒或日期）、GitHub remaining/reset 优先于指数退避，�
 
 ## 状态与运维
 
-- `source_health`：每个外部源的 last_success / last_status / failures / next_poll_at / gap / error。
+- `source_health`：每个外部源的 last_success / last_status / failures / next_poll_at / gap / coverage_gap / error。
+- `coverage_warnings`：历史覆盖不完整的 source；与当前 `source_errors` 独立。
+  当前采集和投递正常时可以是 `watching`，同时保留历史覆盖警告；不能解释为历史已补齐。
 - `source_errors`：当前源错误。恢复后清除，不覆盖 handler 的独立不确定/暂停状态。
 - `degraded` 表示注册仍在运行但源不健康，**不是暂停**。已完成一次有界外部采集的 degraded 也可作为
   start 的就绪结果；成功注册不等于源健康，调用方必须查看状态。

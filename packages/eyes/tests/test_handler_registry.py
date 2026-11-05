@@ -39,7 +39,8 @@ def recording(tmp_path):
             return DeliveryResult('succeeded')
 
         def snapshot(self):
-            return HandlerSnapshot(self.state, {'label': self.definition.label, 'count': len(self.deliveries)})
+            return HandlerSnapshot(self.state, {'label': self.definition.label, 'count': len(self.deliveries)},
+                                   binding={'label': self.definition.label})
 
         async def check(self):
             if self.state != 'ready':
@@ -252,20 +253,24 @@ async def test_common_health_check_and_resume_need_no_acp_attributes(
     instances[0].check = check
     await observers.health()
     _, status = await observers.dispatch('owner-status', {'owner': 'test', 'registration_id': identifier})
-    assert status['state'] == ('paused' if recoverable else 'needs-review')
+    assert status['state'] == ('degraded' if recoverable else 'needs-review')
     assert status['error'] == 'record storage temporarily unavailable'
-    assert original.task.done() and instances[0].state == 'closed'
     if recoverable:
-        # Health recovery alone is not authority to restart collection.
+        row, = await observers.store.rows('test')
+        assert row['state'] == 'running'
+        assert not original.task.done() and instances[0].state == 'ready'
+        # Only the existing connection recovers; no observation/baseline restart.
+        async def recovered():
+            pass
+        instances[0].check = recovered
+        await asyncio.sleep(.3)
         await observers.health()
-        assert observers.active[identifier] is original
-        await observers.dispatch('owner-resume', {'owner': 'test', 'registration_id': identifier})
-        async with asyncio.timeout(3):
-            while not observers.active[identifier].ready:
-                await asyncio.sleep(.01)
-        assert observers.active[identifier] is not original
-        assert len(instances) == 2 and instances[1].calls == ['start']
+        _, status = await observers.dispatch('owner-status', {'owner': 'test', 'registration_id': identifier})
+        assert status['state'] == 'watching' and not status['error']
+        assert observers.active[identifier] is original and len(instances) == 1
+        assert instances[0].calls == ['start', 'resume']
     else:
+        assert original.task.done() and instances[0].state == 'closed'
         with pytest.raises(ValueError, match='cannot be resumed'):
             await observers.dispatch('owner-resume', {'owner': 'test', 'registration_id': identifier})
         assert len(instances) == 1
@@ -320,3 +325,43 @@ async def test_custom_handler_explicit_resume_retries_the_same_delivery(
     assert handler.calls == ['start', 'resume']
     assert len(instances) == 1 and len(attempts) == 2
     assert attempts[0] == attempts[1]  # No new identity or reconstructed evidence.
+
+
+async def test_transport_reconnect_uses_bounded_backoff_without_baseline_or_handler_replacement(
+    tmp_path, observer_data, recording, observers, monkeypatch,
+):
+    from xdog.eyes.handlers.contracts import HandlerHealthError
+
+    _, instances, _, _ = recording
+    _, result = await observers.dispatch('register', {
+        'owner': 'test', 'definition': definition_data(parse(record_data(observer_data), base_dir=tmp_path)),
+    })
+    identifier = result['registration_id']
+    async with asyncio.timeout(3):
+        while not observers.active[identifier].ready:
+            await asyncio.sleep(.01)
+    original = observers.active[identifier]
+    now = [observers.clock()]
+    monkeypatch.setattr(observers, 'clock', lambda: now[0])
+    online, retries = [False], []
+    async def check():
+        if not online[0]:
+            raise HandlerHealthError('offline', recoverable=True)
+    async def reconnect():
+        retries.append(now[0])
+        return online[0]
+    instances[0].check, instances[0].resume = check, reconnect
+    await observers.health()
+    assert original.retries['recorder'][1] == now[0] + .25
+    for _ in range(10):
+        await observers.health()
+    assert not retries
+    now[0] += .25
+    await observers.health()
+    assert len(retries) == 1 and original.retries['recorder'][1] == now[0] + .5
+    online[0] = True
+    now[0] += .5
+    await observers.health()
+    assert len(retries) == 2 and not original.handler_errors and not original.retries
+    assert observers.active[identifier] is original and len(instances) == 1
+    assert instances[0].calls == ['start']

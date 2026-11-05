@@ -22,9 +22,9 @@ class RuntimeEvent:
 
 @dataclass(frozen=True)
 class DeliveryResult:
-    """Only not-sent retries automatically; durable enqueue can explicitly resume the same ID."""
+    """Retry preserves the original identity; it makes no claim that a send did not happen."""
 
-    status: Literal["queued", "succeeded", "failed", "cancelled", "not-sent", "outcome-unknown", "paused"]
+    status: Literal["queued", "succeeded", "failed", "cancelled", "not-sent", "outcome-unknown", "paused", "retry"]
     error: str = ""
     receipt_status: str = ""
     message_state: str = ""

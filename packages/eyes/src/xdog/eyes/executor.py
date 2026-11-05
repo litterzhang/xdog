@@ -90,7 +90,7 @@ async def observe(
     scheduler_sources: dict[str, SchedulerSource] | None = None,
     checkpoint: dict[str, Any] | None = None,
     save: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-    replay_safe: bool = False,
+    retry_safe_routes: frozenset[str] = frozenset(),
     remote_sampler: RemoteSampler | None = None,
     event_reader: Callable[[EventSourceDef, int], Awaitable[EventInput | None]] | None = None,
 ) -> None:
@@ -140,7 +140,7 @@ async def observe(
             if value.get('baseline') is not None or value.get('records') is not None:
                 baselined.add(detectors[key].definition.source)
         for key, value in checkpoint['pending'].items():
-            ambiguous = value['inflight'] and not replay_safe
+            ambiguous = value['inflight'] and key not in retry_safe_routes
             pending[key] = _Pending(restore_delivery(value['delivery'], definition, registration_id),
                 attempts=value['attempts'], paused=value['paused'] or ambiguous,
                 terminal=value['terminal'] or ambiguous, inflight=value['inflight'])
@@ -238,7 +238,7 @@ async def observe(
             report('delivery_outcome_unknown', delivery=item.delivery,
                    error='Interrupted delivery is unknown; never automatically replayed')
     for identifier, state in remote_state.items():
-        if state.get('failures', 0) or state.get('gap'):
+        if state.get('failures', 0) or state.get('error'):
             source_errors.add(identifier)
             report('source_error', source=identifier, error=state.get('error', 'Previous remote read failed'))
     for identifier in (*schedulers, *pushed):
@@ -279,8 +279,8 @@ async def observe(
                     del pending[route_id]
                     if route_id in backlog:
                         pending[route_id] = _Pending(backlog.pop(route_id))
-                elif result.status == "not-sent":
-                    report("delivery_retry", delivery=item.delivery, error=result.error)
+                elif result.status in {"not-sent", "retry"}:
+                    report("delivery_retry", delivery=item.delivery, error=result.error, receipt=result)
                     item.retry_at = now + min(5.0, 0.25 * 2 ** min(item.attempts - 1, 5))
                 else:
                     item.paused = True
