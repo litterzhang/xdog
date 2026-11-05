@@ -169,6 +169,6 @@ readable evidence, not a branch-switch or tool-replay operation.
 
 See [reference](/packages/claw/reference), [skills](/packages/skills),
 [package README](https://github.com/litterzhang/xdog/blob/main/packages/claw/README.md)
-and [assistant-core acceptance](https://github.com/litterzhang/xdog/blob/main/docs/claw-assistant-core-requirements.json).
+and [assistant-core acceptance](https://github.com/litterzhang/xdog/blob/main/docs/archive/claw/claw-assistant-core-requirements.json).
 Acceptance records distinguish verified behavior from remaining integration limits;
 this page does not claim live-channel, whole-product or non-Linux verification.

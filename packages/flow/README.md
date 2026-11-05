@@ -756,7 +756,7 @@ written without knowing where it was allowed to write.
 
 If you need a bound that holds against a script written to defeat it, that needs
 a child process and an OS bound — scoped in
-[`docs/script-node-confinement.md`](../../docs/script-node-confinement.md).
+[`docs/archive/flow/script-node-confinement.md`](../../docs/archive/flow/script-node-confinement.md).
 
 ### Subflows
 
@@ -792,7 +792,7 @@ security boundary from the workflow passing the preflight checks.
 It is **not a sandbox**. Nothing here restricts the process at the OS level; the
 guarantee comes entirely from the refusals above holding. Confining a run
 properly would mean a subprocess plus Landlock or `bwrap`, which is a much larger
-change — see [`docs/workspace-confinement.md`](../../docs/workspace-confinement.md).
+change — see [`docs/archive/flow/workspace-confinement.md`](../../docs/archive/flow/workspace-confinement.md).
 
 ## Per-node tools
 

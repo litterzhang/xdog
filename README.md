@@ -155,7 +155,7 @@ handlers. File JSON, HTTP/HTML, RSS/Atom, GitHub resources, schedules and local
 pushed events share the same bounded checkpoint/delivery path. Compare fields on
 each detector independently, not on the source. Local producers publish stable
 IDs through `xdog-eyes publish`; acceptance is not Agent execution or user notice.
-See [observation contracts and event intake](docs/eyes-observation-contracts.md).
+See [observation contracts and event intake](docs/eyes/observation-contracts.md).
 
 Copy and edit a [shipped definition](packages/eyes/src/xdog/eyes/examples/source-test-review.json)
 to name a real receiver and existing destination, then:
@@ -210,13 +210,13 @@ unknown effects are never automatically replayed. See the [Eyes guide](packages/
   empty supplemental selection cannot remove capability contributions. The
   read-only `skill` tool exposes instructions on demand; native Agent still
   accepts `tools`/`skills`. Flow CLI execution does not inherit host sandbox or
-  approval hooks. See the [offline SDK example](docs/sdk-capability-assembly.md).
+  approval hooks. See the [offline SDK example](docs/agent/capabilities.md).
 - SDK snapshots keep structured history and serializable state, not clients,
   credentials, callables, connections or host authority. Restore needs explicit
   live bindings, starts no model call and does not replay uncertain tool effects.
 
 See [Agent](packages/agent/README.md), [Skills/Goal](packages/skills/README.md) and
-[tool ownership](docs/host-owned-tool-registry.md) for the SDK composition contracts.
+[tool ownership](docs/agent/tool-repo.md) for the SDK composition contracts.
 
 ## Site · 文档与本地演示
 
@@ -248,9 +248,10 @@ uv run xdog-flow test packages/flow/examples/ --allow-script-stub
 ```
 
 For targeted tests: `uv run pytest packages/site/tests -q` (substitute a package).
-The [architecture guide](AGENTS.md) documents current boundaries. Historical design
-and verification records under `docs/` are evidence of their dated scope, not a
-promise that retired interfaces are still supported.
+Start with the [documentation index](docs/README.md) and
+[architecture overview](docs/architecture.md); [AGENTS.md](AGENTS.md) supplies contributor constraints.
+Current guides are grouped by topic. [Archived plans and verification](docs/archive/README.md)
+are evidence of their dated scope, not a promise that retired interfaces are still supported.
 
 ## License · 许可
 

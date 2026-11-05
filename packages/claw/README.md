@@ -51,7 +51,7 @@ is loaded as dynamic context. Existing files are never overwritten by the packag
 default. Current identities, source bindings and tool grants come from host
 configuration/admitted inputs, not editable profile text or message tags. Shared
 history and existing confidentiality rules are unchanged. See
-[internal boundaries](../../docs/claw-core-boundaries.md) for the module layout,
+[internal boundaries](../../docs/claw/architecture.md) for the module layout,
 input-bound tool contract and regression checks.
 
 Gateway owns process/endpoints/channels; `NativeConnection` owns only its peer's
@@ -65,7 +65,7 @@ operations are separate modules using the same owning AgentSession.
 Controller operation scopes revalidate context after waiting for admission and
 retain context-change fences through actual settlement. Shutdown closes new
 admission; detached old requests cannot publish into a successor. See
-[runtime ownership/refactor verification](../../docs/claw-runtime-refactor.md).
+[runtime ownership/refactor verification](../../docs/archive/claw/claw-runtime-refactor.md).
 
 ## System prompt and workspace defaults
 
@@ -100,7 +100,7 @@ input's permissions. Native-tool models do not receive a duplicate textual tool
 catalog. Text-only models retain an explicitly inspection-only inventory of their
 selected, permitted tools. Agent supplies the skill index and explicitly activated
 bodies through its existing skill placement; Claw adds no second loader or default
-activation. See [prompt boundaries](../../docs/claw-system-prompt.md).
+activation. See [prompt boundaries](../../docs/claw/system-prompt.md).
 
 ## Quick start
 
@@ -281,7 +281,7 @@ silently satisfy it. The root uv source is a public fork pinned to a full Git co
 not an absolute path in wheel metadata. A standalone workspace checkout no longer
 needs a sibling repository. **The downstream version is not on PyPI**: a standalone
 Claw wheel/extra install must explicitly supply the same pinned Git dependency;
-see `docs/claw-xhs-sdk.md`. Never silently replace it with upstream PyPI `0.6.4`.
+see `docs/claw/xhs-sdk.md`. Never silently replace it with upstream PyPI `0.6.4`.
 
 Candidate cookies are independently verified before publication; a failed scan or
 verification retains the existing credentials and binding. A host-local lease
@@ -317,7 +317,7 @@ edits, login changes and account-revision fences are explicit. Private messages
 and a per-output review UI are not implemented. Default tests use synthetic
 HTTP/model fixtures and never send a real comment/post.
 
-See [identity/XHS design and configuration](../../docs/claw-input-identity-design.md)
+See [identity/XHS design and configuration](../../docs/claw/input-identity.md)
 for permissions and lifecycle.
 
 ### Identity tool permissions and original posts
@@ -339,7 +339,7 @@ The tool is unavailable outside an admitted XHS comment; it does not fetch arbit
 posts, images/video, or all comments. Its results stay in ordinary shared history;
 reply confidentiality is handled by the identity instructions, not a result filter.
 
-See [configuration and identity design](../../docs/claw-input-identity-design.md)
+See [configuration and identity design](../../docs/claw/input-identity.md)
 for a complete YAML example and the limits of tool-name allowlists.
 
 ## Message identity and delivery labels
@@ -386,7 +386,7 @@ MCP/OAuth, export review and attachment chrome, including existing nested/fullsc
 viewers. Coding's pre-start resume picker follows the same theme. Plain mode and
 `NO_COLOR` keep these panels unstyled. Colors do not change row budgets,
 keybindings, visible-confirmation requirements, original source or exported data.
-See [panel theming](../../docs/panel-theming.md).
+See [panel theming](../../docs/tui/panels.md).
 
 `uv run xdog-claw tui` connects to the configured gateway using the main terminal
 buffer and native scrollback. It shares Coding's Unicode multiline editor and
@@ -415,7 +415,7 @@ EOF, terminal errors and exit settle client socket work, blocked reads/drains an
 reconnect waits; they do not revoke already accepted application input. Explicit
 original-input cancellation and gateway shutdown have separate execution owners.
 
-See [terminal verification](../../docs/tui-pi-parity.md) for tests and limitations.
+See [terminal verification](../../docs/archive/tui/tui-pi-parity.md) for tests and limitations.
 
 The native Unix-socket gateway remains, but remote parent-draft negotiation/control
 and extension custom/form/frame/terminal-hook transports are removed. Primary
@@ -514,7 +514,7 @@ Eyes task observation uses the shared daemon's public CLI, not a Claw observer
 runtime. Unknown/interrupted effects are not automatically replayed. The optional
 explicitly enabled `goal_ui` display is read-only and owns no business lifetime.
 See [skills actions and state protocol](../skills/README.md) and
-[Goal design](../../docs/goal-simple-design.md).
+[Goal design](../../docs/goal/design.md).
 
 ## Durable intake and explicit input control
 
@@ -718,7 +718,7 @@ is reported as basic-exclusion fallback, not silently claimed as ignore support.
 Results refresh after three seconds, removing deleted/newly ignored names. Git
 hooks/fsmonitor commands are disabled and repository metadata is not modified.
 Older gateways without workspace metadata retain slash completion but do not
-guess a filesystem root. See `docs/agent-ui-gap-plan.md` for evidence and the
+guess a filesystem root. See `docs/archive/agent-ui/agent-ui-gap-plan.md` for evidence and the
 remaining UI/capability goal.
 
 ### TUI keybindings and external editor
@@ -846,7 +846,7 @@ reason to silently reset. An existing empty regular transcript remains valid.
 Persisted reset timestamps require explicit timezones; invalid data is retained
 for repair rather than silently migrated. Compaction commits a complete indexed
 original checkpoint before journaled history replacement; recovery does not run
-models or replay tools. See [the design and inheritance table](../../docs/superpowers/specs/2026-10-20-claw-context-reliability-design.md).
+models or replay tools. See [the design and inheritance table](../../docs/archive/superpowers/specs/2026-10-20-claw-context-reliability-design.md).
 
 A durable catalog retains archived conversations instead of losing metadata on
 reset. Older orphan JSONL archives are recovered only inside an explicitly owned
@@ -1348,7 +1348,7 @@ restores the child history into a fresh runtime, and closes that Agent after the
 round. Claw borrows the gateway's original loop and never stops it for child idle
 cleanup. Interrupted/failed work and unknown effects are never automatically
 replayed. Old records without safe continuation metadata require a fresh child;
-see [child continuation](../../docs/child-continuation.md) for recovery and permission boundaries.
+see [child continuation](../../docs/agent/children.md) for recovery and permission boundaries.
 
 Children share their group's workspace but never inherit the parent's conversation
 history or system prompt. Model/options may be independently selected; tools/skills
@@ -3310,7 +3310,7 @@ with a session ID and message position to verify original scope and tool results
 Live pagination is bounded; follow the returned continuation offsets. Historical
 content and handoffs are evidence, not new permissions or permission to replay work.
 
-See [context continuity design and verification](https://github.com/litterzhang/xdog/blob/main/docs/claw-context-continuity.md).
+See [context continuity design and verification](https://github.com/litterzhang/xdog/blob/main/docs/claw/context-continuity.md).
 
 ### Compact message hierarchy
 

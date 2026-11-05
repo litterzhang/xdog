@@ -28,7 +28,7 @@ Every gateway starts its private Unix ACP receiver at
 `<data_dir>/acp/agent.sock`. `acp_socket_path` or `gateway start --acp-socket PATH`
 overrides it. The prompt publishes the real endpoint, opaque session address,
 cwd and enqueue shape; never guess these from a transcript or event label.
-See [Claw/Eyes ACP setup](../../../docs/claw-eyes-acp.md).
+See [Claw/Eyes ACP setup](../../../docs/claw/acp.md).
 
 ## Application-owned intake and output
 

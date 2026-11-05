@@ -73,4 +73,4 @@ concerns. A reviewed export is not execution approval or a durable task receipt.
 | Linux clipboard | Explicit Wayland `wl-paste` / X11 `xclip` helpers; no background polling or non-Linux adapter. |
 
 See the [complete component reference](https://github.com/litterzhang/xdog/blob/main/packages/tui/README.md)
-and [terminal verification scope](https://github.com/litterzhang/xdog/blob/main/docs/tui-pi-parity.md).
+and [terminal verification scope](https://github.com/litterzhang/xdog/blob/main/docs/archive/tui/tui-pi-parity.md).

@@ -164,7 +164,7 @@ permission policy. **The Flow CLI does not inherit an Agent host's sandbox or
 approval hooks**; do not grant general workflow execution to an isolated author
 without an appropriate execution boundary.
 
-See the [capability lifecycle and restoration guide](https://github.com/litterzhang/xdog/blob/main/docs/sdk-capability-assembly.md)
+See the [capability lifecycle and restoration guide](https://github.com/litterzhang/xdog/blob/main/docs/agent/capabilities.md)
 for multi-owner composition, shutdown and snapshot restore.
 
 ## Host-owned tool inventories
@@ -201,7 +201,7 @@ and `active_tools` is its effective selection. Use
 `set_active_tools(names, expected_revision=agent.tool_selection_revision)` for
 an idle, revision-checked selection (`None` means all, `[]` means none).
 Extensions contribute hooks, commands, UI and providers, **not model tools**.
-See [registry reference](../../docs/host-owned-tool-registry.md) and
+See [registry reference](../../docs/agent/tool-repo.md) and
 [the MCP lifecycle example](#separate-mcp-registry-and-agent-integration).
 
 ## Generic structured results
@@ -293,7 +293,7 @@ async with selected.open() as assembly:
 ```
 
 Here `stream_fn`, `config` and `consume` are supplied by the host; see the
-[complete offline example](../../docs/sdk-capability-assembly.md) for a standalone
+[complete offline example](../../docs/agent/capabilities.md) for a standalone
 program. Discovery is inert; `.open()` starts **only selected providers**. It
 supplies an `ApplicationPort` by default for application scope; session/group
 scope requires the actual owner port. Advanced hosts may still explicitly
@@ -746,7 +746,7 @@ message: its history/metadata are rebound to a fresh authorized Agent, only the
 new input executes, then the Agent and its workers are closed again. Coding's
 child loop/thread retires at idle; Claw never stops its borrowed gateway loop.
 This is not automatic replay of interrupted, failed or unconfirmed effects.
-See `docs/child-continuation.md` for acceptance and legacy-record limits.
+See `docs/agent/children.md` for acceptance and legacy-record limits.
 
 The shipped hosts expose one model-facing child tool, `agent`: use `action="spawn"` with `task` and optional
 `access`/`inherit_context`/`config`; use `list`, `presets`, `inspect`, `steer`,
@@ -2011,7 +2011,7 @@ Extension model-tool registration (`api.tool`, `ExtensionRuntime.tools/sync_tool
 worker `tools/list` / `tools/call`) has been removed. Extensions still provide
 commands, hooks, UI and model providers; pre/post-tool hooks and read-only tool
 inventory queries inspect the host's actual tools without contributing tools.
-See [host-owned tool registry](../../docs/host-owned-tool-registry.md).
+See [host-owned tool registry](../../docs/agent/tool-repo.md).
 
 ### MCP browsing and manual refresh
 
@@ -2220,13 +2220,13 @@ Install `xdog-agent[acp]` to use ACP; the SDK is not required by base Agent.
 The optional dependency is `agent-client-protocol>=0.12.1,<0.13` on Python 3.12–3.14
 (the current SDK is excluded by marker on 3.15+). Normal non-ACP imports remain
 independent of that SDK. Coding's session ownership and durable inbox extensions
-are product policy, not a second generic Agent loop. Historical external-event
-records retain only codec/projection compatibility, not a live event host.
+are product policy, not a second generic Agent loop. The retired external-event
+codec and event host are removed; current external inputs use the canonical session-input protocol.
 `Agent.prompt` also accepts a list of independent Agent messages in one turn;
 coding's bounded SessionController batches use that path without another tool
 loop. Coding's automatic durable Inbox, batch IDs and message-cancellation policy
 are harness policy, not forced into the generic ACP backend.
-See [ACP session routing](../../docs/acp-session-routing.md).
+See [ACP session routing](../../docs/protocols/acp.md).
 
 
 ### Basic extension interaction scope
@@ -2249,7 +2249,7 @@ unavailable, never a fake empty dataset. Queries/snapshots are finite, bounded
 JSON; actual client/owner/binding identity is checked across awaits and through
 callback publication. Coalesced `view_changed` hints use the existing process
 owner without starting a dormant worker or model. See
-`docs/extension-owner-views.md` in the repository for the contract and limits.
+`docs/agent/extensions.md` in the repository for the contract and limits.
 
 ### Public extension command names
 
@@ -2257,7 +2257,7 @@ owner without starting a dormant worker or model. See
 its internal extension/command identity. The same declaration drives execution,
 help, argument completion and shortcuts. Hosts reserve builtin/skill names;
 conflicting names are rejected rather than shadowed. This is a user command, not
-a model tool. See `docs/extension-public-commands.md` in the repository for the
+a model tool. See `docs/agent/extensions.md` in the repository for the
 snapshot, ownership and stable-keybinding contract.
 
 
@@ -2268,7 +2268,8 @@ on actual session/group/application owners. Discovery is inert; a snapshot canno
 name code to import. `CapabilitySet` owns startup/flush/close, while pinned
 `ParentPort` and `ChildPort` handles retain actual tool identity and existing
 permission gates. This layer owns no Goal or observation schema and starts no
-second Agent loop. See `docs/capability-boundary-design.md` in the repository.
+second Agent loop. See [SDK capability assembly](../../docs/agent/capabilities.md)
+and [cross-package boundaries](../../docs/architecture.md).
 
 ### SDK capability assembly
 
@@ -2295,8 +2296,8 @@ Agent sandbox or approval policy. Selecting Eyes then opening the Set ensures
 its independent shared daemon; closing the binding only detaches. Close Agents
 before Sets. Child delegation and restore must retain current real owner grants;
 no snapshot restores repo objects, credentials, connections or permissions.
-See [SDK capability assembly](../../docs/sdk-capability-assembly.md) for a runnable
-offline example and [tool repositories](../../docs/host-owned-tool-registry.md).
+See [SDK capability assembly](../../docs/agent/capabilities.md) for a runnable
+offline example and [tool repositories](../../docs/agent/tool-repo.md).
 
 
 Capability contributions are optional: `skill_names` advertises packaged skills,

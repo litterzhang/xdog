@@ -47,7 +47,7 @@ failure rather than swallowing loader/SDK errors or publishing a false selection
 `/skills`, skill commands and `/unload` remain UI controls. Project instructions still refresh
 through owned off-loop preparation; old alternate resource-loader and resume-template
 branches are removed, without compatibility forwarding. See
-[prompt and skill boundaries](../../docs/coding-system-prompt.md).
+[prompt and skill boundaries](../../docs/coding/system-prompt.md).
 
 ## Interactive terminal
 
@@ -58,7 +58,7 @@ MCP/OAuth, export review and attachment chrome, including existing nested/fullsc
 viewers. Coding's pre-start resume picker follows the same theme. Plain mode and
 `NO_COLOR` keep these panels unstyled. Colors do not change row budgets,
 keybindings, visible-confirmation requirements, original source or exported data.
-See [panel theming](../../docs/panel-theming.md).
+See [panel theming](../../docs/tui/panels.md).
 
 The interface uses native scrollback, one status row, and a shared multiline
 editor. Enter submits or queues; Ctrl+Enter inserts a newline. Ctrl+O opens
@@ -87,7 +87,7 @@ prose and tool previews. Thinking and prose remain separate message objects duri
 streaming; the transcript controls spacing and tools use a bounded branch preview.
 User messages have a subtle background and one blank separator before replies.
 The light theme uses a pale background; plain/NO_COLOR mode omits colors.
-See [terminal verification](../../docs/tui-pi-parity.md); remote coding and
+See [terminal verification](../../docs/archive/tui/tui-pi-parity.md); remote coding and
 fullscreen application modes are excluded.
 
 Details and permission prompts appear below the input. Coding shows the actual activity and
@@ -213,7 +213,7 @@ bypass ignore rules without bypassing tool permissions.
 Results refresh after three seconds. Without Git (or if enumeration fails), the
 UI explicitly reports a resumable basic-exclusion fallback; Git ignore semantics
 are then unavailable. No repository hooks/fsmonitor commands are enabled and no
-workspace/index metadata is modified. See `docs/agent-ui-gap-plan.md` at the
+workspace/index metadata is modified. See `docs/archive/agent-ui/agent-ui-gap-plan.md` at the
 repository root for verification and remaining parity work.
 
 ### Keybindings and external editor
@@ -821,7 +821,7 @@ revalidated current parent authority, runs only the new message, then closes the
 Agent and its workers. Coding's child loop/thread exits when idle and is acquired
 on demand; Claw keeps using its original gateway loop. Interrupted/failed effects
 are not automatically replayed; old records without continuation metadata fail
-clearly rather than inventing recoverability. See [child continuation](../../docs/child-continuation.md).
+clearly rather than inventing recoverability. See [child continuation](../../docs/agent/children.md).
 
 Children share the workspace, so coordinate conflicting writes. Parent conversation
 history and system prompts are never copied; task knowledge is first-user material.
@@ -2713,7 +2713,7 @@ The old event-host package/environment/capabilities and historical event decoder
 are removed. No old-record migration or rendering branch is retained. External model input is
 `xdog.session_input.v1`; a nonsecret `XDOG_SESSION_ID` tool-environment hint follows
 session navigation without granting permissions. See the [full protocol and
-receiver setup](../../docs/acp-session-routing.md).
+receiver setup](../../docs/protocols/acp.md).
 
 ### Explicit MCP arguments
 
@@ -2800,7 +2800,7 @@ This is generic extension routing, not a Coding-specific Goal command. Public
 names appear in help/completion and cannot shadow builtins or other owners; native installed capabilities
 may explicitly overlap only their own skill command entry, without preventing skill loading;
 model tool names and permissions do not change. See
-`docs/extension-public-commands.md` for the shared Coding/Claw contract.
+`docs/agent/extensions.md` for the shared Coding/Claw contract.
 
 
 ## Goal: records and main-Agent reminders
@@ -2841,7 +2841,7 @@ replayed. Optional Eyes observation watches only this Goal's task directory thro
 the shared daemon CLI. Legacy Goal files are reported and left untouched.
 
 See the [skills README](../skills/README.md) for actions, progress/task protocols and
-wait/question delivery details, and [Goal design](../../docs/goal-simple-design.md).
+wait/question delivery details, and [Goal design](../../docs/goal/design.md).
 The optional explicitly enabled `goal_ui` display is read-only; it does not own
 Goal lifetime or intercept ordinary UI input.
 

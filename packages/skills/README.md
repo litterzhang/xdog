@@ -236,9 +236,9 @@ readonly. Default `/goal` commands/tools use the installed native capability, no
 that worker. Native `/goal` overlaps only its own discoverable skill command;
 builtins/other owners cannot be shadowed. UI failure cannot own Goal lifetime.
 
-See [host faults](../../docs/goal-host-faults.md),
-[optimization design](../../docs/goal-optimization-design.md),
-[optimization acceptance](../../docs/goal-optimization-requirements.json),
-[simplified design](../../docs/goal-simple-design.md) and
-[baseline acceptance](../../docs/goal-simple-requirements.json).
+See [host faults](../../docs/goal/design.md),
+[optimization design](../../docs/goal/design.md),
+[optimization acceptance](../../docs/archive/goal/goal-optimization-requirements.json),
+[simplified design](../../docs/goal/design.md) and
+[baseline acceptance](../../docs/archive/goal/goal-simple-requirements.json).
 Earlier kernel/adapter/reviewer records describe retired designs, not this contract.

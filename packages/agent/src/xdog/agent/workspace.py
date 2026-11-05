@@ -25,7 +25,7 @@ module-level name do not help — this was tested, not assumed. What it does sto
 completely, is the realistic failure: a script that wanders, builds a path from a
 bad input, or was written without knowing where it was allowed to write. Nothing
 here defends against a script authored to defeat it; that needs a child process
-and an OS bound (see ``docs/script-node-confinement.md``).
+and an OS bound (see ``docs/archive/flow/script-node-confinement.md``).
 """
 
 from __future__ import annotations

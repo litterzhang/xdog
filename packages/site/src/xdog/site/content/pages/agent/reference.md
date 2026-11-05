@@ -152,5 +152,5 @@ opens application capabilities. It is not a host approval sandbox.
 | `/clear · /verbose · /help · /exit` | Conversation reset, diagnostics, help and exit. |
 
 Full [SDK reference](https://github.com/litterzhang/xdog/blob/main/packages/agent/README.md),
-[registry API](https://github.com/litterzhang/xdog/blob/main/docs/host-owned-tool-registry.md)
-and [capability assembly example](https://github.com/litterzhang/xdog/blob/main/docs/sdk-capability-assembly.md).
+[registry API](https://github.com/litterzhang/xdog/blob/main/docs/agent/tool-repo.md)
+and [capability assembly example](https://github.com/litterzhang/xdog/blob/main/docs/agent/capabilities.md).

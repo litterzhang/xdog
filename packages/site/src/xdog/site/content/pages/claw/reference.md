@@ -117,7 +117,7 @@ or storage. Receiver-only restart preserves pending/running work. Application
 shutdown/crash marks started execution interrupted, never automatic model/tool
 replay. Explicit original-input cancellation/retry remains separately fenced.
 No socket grants tool approval or exactly-once effects. See
-[ACP setup/recovery](https://github.com/litterzhang/xdog/blob/main/docs/claw-eyes-acp.md).
+[ACP setup/recovery](https://github.com/litterzhang/xdog/blob/main/docs/claw/acp.md).
 
 ## ACP result reads and explicit notification
 
@@ -300,6 +300,6 @@ interrupted effects are not blindly retried.
 
 See [Eyes](/packages/eyes), [Flow](/packages/flow),
 [full package README](https://github.com/litterzhang/xdog/blob/main/packages/claw/README.md)
-and [current acceptance](https://github.com/litterzhang/xdog/blob/main/docs/claw-assistant-core-requirements.json).
+and [current acceptance](https://github.com/litterzhang/xdog/blob/main/docs/archive/claw/claw-assistant-core-requirements.json).
 These are host policy/recovery boundaries, not an OS sandbox or proof of live
 external-channel, non-Linux or complete whole-product validation.

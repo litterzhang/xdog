@@ -33,7 +33,7 @@ Claw policy. Applications own permission decisions and lifecycle state, while
 `InlineLayout` only positions panels and allocates height. Use `InputPanel` and
 `DetailsPanel` directly; retired alias modules are not provided.
 
-See [terminal stability and verification](../../docs/tui-pi-parity.md) for scope,
+See [terminal stability and verification](../../docs/archive/tui/tui-pi-parity.md) for scope,
 test commands, and platform limitations. Dedicated fullscreen applications and remote
 coding are outside this stability work; the explicit temporary transcript
 alternate-screen surface is described below.
@@ -110,7 +110,7 @@ workspace Git state or hooks are changed/executed. Missing/failing Git is a
 visible basic-exclusion fallback. `CompletionStatusProvider` optionally supplies
 non-blocking progress text; InputPanel clamps it to the existing menu budget and
 never treats status as a selectable path. See the repository’s
-[UI gap plan](../../docs/agent-ui-gap-plan.md) for historical application goals and verification; it is not an additional library API.
+[UI gap plan](../../docs/archive/agent-ui/agent-ui-gap-plan.md) for historical application goals and verification; it is not an additional library API.
 
 ### Prompt keymaps and foreground terminal handoff
 

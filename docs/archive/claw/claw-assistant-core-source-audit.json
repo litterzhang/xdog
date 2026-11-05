@@ -1,0 +1,534 @@
+{
+  "format": "xdog.assistant_core.source_audit.v1",
+  "spec": "docs/archive/superpowers/specs/2026-10-19-claw-assistant-core-design.md",
+  "scope": "Final local assistant-core acceptance; all47 original source mechanisms and named runtime cases rechecked; final source/installed/review gates settled",
+  "source_base": "67120ee5d5b1b5ac641bb4be92b2dd0796fa3884",
+  "candidate": "Superseded by final_local_verification",
+  "rows": [
+    {
+      "id": "CORE-01",
+      "source_mechanism": "find_spec/package extras gate capability only; installed skill uses normal packaged discovery; absent hosts open no Goal journal.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_without_goal_package_claw_is_an_ordinary_assistant_without_goal_storage_or_tool",
+        "packages/claw/tests/test_goal_host.py::test_installed_goal_is_available_without_a_feature_flag_but_never_delegates_ordinary_chat"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "CORE-02",
+      "source_mechanism": "GoalService.create requires actual user context; status/reconcile/idle have no planner or reviewer-start edge; skill says availability is not delegation.",
+      "runtime_cases": [
+        "packages/goal/tests/test_service.py::test_optional_capability_is_not_delegation_or_automatic_model_work"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "CORE-03",
+      "source_mechanism": "Changes are on current feature checkout; no worktree/push/merge/publish operation in implementation; temporary sockets/envs contain only fixture data.",
+      "runtime_cases": [],
+      "source_verdict": "gate_or_operation_audit",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-01",
+      "source_mechanism": "Native/Weixin call application route_message; ACP delegates accept_external; InputService.submit awaits leased-store commit before ACK and finally wakes original consumer.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_busy_native_ack_is_a_real_pending_input_not_steering_or_a_second_agent"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-02",
+      "source_mechanism": "Store compares complete encoded envelope for duplicate IDs; claim creates new UUID attempt, terminal writes fence original attempt/status.",
+      "runtime_cases": [
+        "packages/claw/tests/test_input_store.py::test_same_message_id_cannot_alias_different_host_or_content"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-03",
+      "source_mechanism": "Capacity check and insert share BEGIN IMMEDIATE; full refuses new input, never removes accepted rows; pending IDs/attachments remain distinct.",
+      "runtime_cases": [
+        "packages/claw/tests/test_input_store.py::test_concurrent_admission_does_not_overfill_or_delete_accepted_messages"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-04",
+      "source_mechanism": "claimed is preparation; controller owns executor before admission; store.start persists running before Agent prompt; cancelled unstarted claims cannot admit.",
+      "runtime_cases": [
+        "packages/claw/tests/test_input_consumer.py::test_withdrawal_while_executor_waits_prevents_admission_and_allows_next_input"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-05",
+      "source_mechanism": "Exclusive open validates before recovery; claimed releases to pending, running becomes interrupted; retry is explicit new attempt and stale finishes fail.",
+      "runtime_cases": [
+        "packages/claw/tests/test_input_store_ownership.py::test_real_process_exit_recovers_unstarted_but_never_replays_running"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-06",
+      "source_mechanism": "Host ReplyReference captures original scope/channel/recipient before ACK; saved route reused after ACK loss; no destination means no broadcast.",
+      "runtime_cases": [
+        "packages/claw/tests/test_output_source_routes.py::test_external_ack_loss_duplicate_retains_accepted_reply_without_later_resolver_or_recipient",
+        "packages/claw/tests/test_review_readiness.py::test_gateway_restart_recovers_original_weixin_output_after_channel_ready_without_eyes"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-07",
+      "source_mechanism": "Weixin accepts each stable upstream identity before cursor advance; native retains original submission ID across uncertain ACK; envelope persists actual image bytes.",
+      "runtime_cases": [
+        "packages/claw/tests/test_weixin_application_intake.py::test_unsafe_intake_cannot_advance_upstream_cursor"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-08",
+      "source_mechanism": "Per assistant message creates stable output ordinal/send attempt; aggregate response is receipt/history only; entered transport failure is unknown, never auto-resumed.",
+      "runtime_cases": [
+        "packages/claw/tests/test_observer_message_outputs.py::test_notification_cancel_cannot_relabel_an_entered_unknown_send_as_unsent",
+        "packages/claw/tests/test_review_terminal_receipts.py"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-09",
+      "source_mechanism": "Peer close detaches waiter/display; core consumer owns accepted input. Explicit native abort validates original execution tuple and joins before successor.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_running_abort_joins_original_attempt_before_the_next_pending_input_runs",
+        "packages/claw/tests/test_review_terminal_receipts.py"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "IN-10",
+      "source_mechanism": "Claw claim consumes one ordinary row/turn; Coding controller selects fixed batches up to strict1..128 default10, preserving independent user/canonical/image boundaries.",
+      "runtime_cases": [
+        "packages/coding/tests/test_batch_turns.py::test_five_inputs_are_five_history_messages_in_one_turn"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "RUN-01",
+      "source_mechanism": "Claw forwards explicit queue_input/control to the actual Agent; Agent owns checkpoints, selected/consumed/returned IDs, not a second host queue.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_queued_peer_cannot_steer_first_and_abort_withdraws_only_its_queued_input"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "RUN-02",
+      "source_mechanism": "Busy ordinary input stays durable pending and does not enter steer/follow-up; unconsumed explicit lane returns to original view instead of next-turn replay.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_busy_native_ack_is_a_real_pending_input_not_steering_or_a_second_agent"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "RUN-03",
+      "source_mechanism": "One controller reservation/task per group; same-task nested borrowing only; stale/detached tasks cannot release or control successor owner.",
+      "runtime_cases": [
+        "packages/claw/tests/test_native_busy_intake.py::test_delayed_old_view_cannot_control_a_successor_or_retry_attempt"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "RUN-04",
+      "source_mechanism": "Gateway owns parsing/peers/receipts; controller only exclusion/admission; application command methods delegate models/tools/skills/MCP; Session owns Agent/context/history, not Goal manager.",
+      "runtime_cases": [
+        "packages/claw/tests/test_owned_source_io.py::test_generic_source_preserves_actual_ordinary_input_without_goal_policy"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "RUN-05",
+      "source_mechanism": "Original producer retains group through preparation/history commit/cancel; app joins one cleanup job across errors; human groups bypass background semaphore without bypassing own group.",
+      "runtime_cases": [
+        "packages/claw/tests/test_owned_application_projection.py::test_repeated_application_shutdown_cancel_keeps_actual_cleanup_owner"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "BOUND-01",
+      "source_mechanism": "ACP imports only contracts/core inputs/application; it has no Goal/observer schema, report policy, consumer pump or CLI callback; app owns ingress lifecycle.",
+      "runtime_cases": [
+        "packages/claw/tests/test_acp_gateway.py::test_disabled_gateway_import_and_cli_do_not_load_optional_acp_sdk"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "BOUND-02",
+      "source_mechanism": "Observer journal owns intent/cursor/outbox; ACP enqueue stable ID hands to Core; generic registered output policy mirrors independent send facts, not an aggregate sender.",
+      "runtime_cases": [
+        "packages/claw/tests/test_observer_message_outputs.py::test_first_observer_message_arrives_before_second_response_finishes"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "BOUND-03",
+      "source_mechanism": "Goal cancel task/notifications and observer cancel/notifications are separate functions. Completion/abandon/wait/UI unload contain no implicit worker/source stop.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host_recovery.py::test_goal_state_notification_and_observer_controls_are_independent"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "BOUND-04",
+      "source_mechanism": "Cancel targets real WorkerRef/attempt/current group owner; source labels cannot authorize criteria or change host reply destination.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_forged_role_labels_and_execution_references_do_not_grant_a_role"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "BOUND-05",
+      "source_mechanism": "Definitions durable, registrations ephemeral; managed recovery/readiness and standalone disconnect pause explicit. ACK is intake, not Agent/report completion; unknown send remains unknown.",
+      "runtime_cases": [
+        "packages/claw/tests/test_output_source_routes.py::test_notification_cancellation_never_rewrites_an_entered_or_uncertain_send"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-01",
+      "source_mechanism": "Goal pyproject depends only Agent; code uses Goal/Agent/stdlib ports; no harness/TUI/Eyes/ACP/Flow imports in kernel. SDK host example owns actual supervisor.",
+      "runtime_cases": [
+        "packages/goal/tests/test_agent_lifecycle.py::test_actual_supervised_worker_report_and_independent_reviewer_complete"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-02",
+      "source_mechanism": "GoalStore alone owns leased goals/revisions/artifacts/notices; Core stores canonical input/execution/output only. Derived exports carry non-authority markers.",
+      "runtime_cases": [
+        "packages/goal/tests/test_store.py::test_atomic_snapshot_history_notices_and_detached_reads"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-03",
+      "source_mechanism": "Leased store validates exact schema/format/owner before recovery; Claw refuses legacy goals.json byte-preserving; no migration/dual-read importer.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host_recovery.py::test_legacy_goal_truth_is_refused_byte_preserving_without_empty_replacement"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-04",
+      "source_mechanism": "GoalHost Protocol exposes owner/start/status/cancel/enqueue/receipt only; kernel never reads harness private fields or constructs Agent; adapters bind actual host resources.",
+      "runtime_cases": [
+        "packages/goal/tests/test_agent_lifecycle.py::test_actual_supervised_worker_report_and_independent_reviewer_complete"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-05",
+      "source_mechanism": "Actual host supervisor admits worker/reviewer with captured tool ceilings and exact bound tool object identities; readonly reviewer cannot write or accept tasks.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_bound_reports_work_in_parent_readonly_without_granting_filesystem_mutation"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-06",
+      "source_mechanism": "Report transitions to submitted; accept_task requires selected real settled attempt/revision/report digest. Worker report cannot change criteria or complete Goal.",
+      "runtime_cases": [
+        "packages/goal/tests/test_service.py::test_assignment_report_acceptance_and_dependencies_are_distinct"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-07",
+      "source_mechanism": "Only explicit request_complete calls ReviewLifecycle.request; ordinary status/reconcile/wait/turn ends cannot create reviewer or planner.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_ordinary_status_turns_and_goal_wait_do_not_start_a_reviewer"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-08",
+      "source_mechanism": "Review validates ordered exact criteria findings, successful actual reviewer, current revision/fingerprint/Goal version; parent raw verdict and script exit alone rejected.",
+      "runtime_cases": [
+        "packages/goal/tests/test_review.py::test_stale_incomplete_or_script_verdict_cannot_finish_goal",
+        "packages/goal/tests/test_review_abandoned.py"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-09",
+      "source_mechanism": "Stable notice hashes from original Goal/fact/revision; owned outbox receipt reconciliation does not retry unknown blindly or poll active Goal with models.",
+      "runtime_cases": [
+        "packages/goal/tests/test_service.py::test_child_terminal_fact_notifies_once_without_acceptance_or_restart",
+        "packages/claw/tests/test_review_readiness.py::test_actual_child_notices_retry_when_parent_input_releases_capacity"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-10",
+      "source_mechanism": "Actual consumed human message identity controls OperationContext; revise/pause release require_user; automatic labels and display queries cannot provide authority.",
+      "runtime_cases": [
+        "packages/coding/tests/test_goal_lifecycle.py::test_exact_session_notice_has_no_human_authority_even_if_source_and_text_claim_it"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-11",
+      "source_mechanism": "Same GoalService/Store/tools/roles/GoalDisplay used by Claw group namespace and Coding exact session/branch adapters; no cross-host owner transfer.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_host.py::test_actual_claw_worker_explicit_acceptance_independent_readonly_review_and_notices"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-12",
+      "source_mechanism": "Group context rotation preserves Goal owner but rebinds display/current parent; Coding navigation closes old owner and opens new private scope; actual busy resources, not unfinished Goal, block rotation.",
+      "runtime_cases": [
+        "packages/coding/tests/test_goal_lifecycle.py::test_idle_session_navigation_keeps_old_goal_private_and_releases_old_journal"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "GOAL-13",
+      "source_mechanism": "Supervisor has no fixed child lifetime/token/call/concurrency/record business quota; F06 aggregate snapshot cap/recursive graph limit removed; transport/individual report bounds stay exact pages.",
+      "runtime_cases": [
+        "packages/goal/tests/test_cumulative_state.py::test_aggregate_goal_over_old_megabyte_cap_roundtrips_reopens_and_preserves_versions"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "UI-01",
+      "source_mechanism": "One packaged goal_ui Python worker queries granted GoalDisplay data and publishes generic status UI; native source no longer hides Goal-like ordinary text or interprets Goal progress.",
+      "runtime_cases": [
+        "packages/goal/tests/test_ui_views.py::test_same_packaged_goal_worker_uses_view_port_without_ui_or_a_business_host_loop"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "UI-02",
+      "source_mechanism": "Tui distribution depends only wcwidth and generic extension models/rendering; host TUI connects/layouts generic snapshots without Goal imports/state.",
+      "runtime_cases": [
+        "packages/claw/tests/test_goal_extension_views.py::test_actual_group_goal_grants_headless_display_and_never_starts_work_for_queries"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "UI-03",
+      "source_mechanism": "ViewRegistry tokens bind actual configured extension+view+owner; strict bounded finite JSON, post-await binding check, no host method/owner selector; hints coalesced/non-authoritative.",
+      "runtime_cases": [
+        "packages/agent/tests/test_extension_views.py::test_registry_checks_real_owner_after_read_and_clones_query_and_result"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "UI-04",
+      "source_mechanism": "Validated display_only cannot register hooks/tools/providers/entries/actions; only its failures are non-veto. Unknown/default required guards remain fail-closed; unload retires view/UI not Goal service.",
+      "runtime_cases": [
+        "packages/agent/tests/test_extension_display_profile.py::test_failed_display_is_nonblocking_but_the_real_required_guard_still_blocks"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "UI-05",
+      "source_mechanism": "Display is text/allowed generic components, no arbitrary renderer/layout or business mutation; Goal tools/notices work headless; reading views starts no model.",
+      "runtime_cases": [
+        "packages/coding/tests/test_goal_extension_views.py::test_actual_coding_goal_owner_grants_headless_display_and_reading_never_calls_a_model"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "VERIFY-01",
+      "source_mechanism": "Real data-fsync/transaction/crash/lease/corruption and owned IO probes cover actual original scopes; actor-loop constructors adopt frozen facts; pure UI receiver thread is not Core ownership.",
+      "runtime_cases": [
+        "packages/claw/tests/test_owned_child_restore_io.py::test_existing_child_catalog_restore_reads_off_loop_without_replay_or_repair"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "VERIFY-02",
+      "source_mechanism": "Journal/committed receipts authority differs from readonly exports/UI/hints; failed display cannot undo facts; output unknown stays unknown; F06 pages preserve exact original revision and committed result.",
+      "runtime_cases": [
+        "packages/goal/tests/test_data_pages.py::test_parent_pages_keep_committed_version_after_another_actual_mutation"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "VERIFY-03",
+      "source_mechanism": "Retired Claw queue configs/Goal planner/native Goal widgets/aggregate report sender removed; single GroupController/Agent runtime path, Agent own queue semantics intact.",
+      "runtime_cases": [
+        "packages/claw/tests/test_owned_source_io.py::test_generic_source_preserves_actual_ordinary_input_without_goal_policy"
+      ],
+      "source_verdict": "inspected_with_current_runtime_cases",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "VERIFY-04",
+      "source_mechanism": "Current full9 source/strict/Ruff/Flow/lock gates run on changed source, not inferred from focus; retained timing/root-full observations and original real terminals/sockets.",
+      "runtime_cases": [],
+      "source_verdict": "gate_or_operation_audit",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "VERIFY-05",
+      "source_mechanism": "Earlier cold snapshots are explicitly stale; all current affected distributions must rebuild and run actual Goal-only/both-host/ACP/native consumers with byte parity.",
+      "runtime_cases": [],
+      "source_verdict": "gate_or_operation_audit",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    },
+    {
+      "id": "VERIFY-06",
+      "source_mechanism": "Source audit is not overall completion; all rows, one wholebranch review, important fixes and final current artifacts must settle before goal complete.",
+      "runtime_cases": [],
+      "source_verdict": "gate_or_operation_audit",
+      "remaining_final_proof": "None for the scoped assistant-core contract; explicit original non-goals and deferred minors retained",
+      "overall_acceptance": "passed",
+      "candidate_verification": "Superseded by fresh final source gates, isolated consumers, byte parity and single TDD review fix pass"
+    }
+  ],
+  "implementation_head": "f2b0725bd1115a7e1e9a4cfc26b4339a37fc36eb",
+  "candidate_artifact_proof": "docs/archive/claw/claw-assistant-core-candidate-artifacts.json",
+  "independent_review_status": {
+    "status": "failed_before_session_start",
+    "reviewer_started": false,
+    "reason": "ENOSPC creating /home/zhang/.codex/thread-writer-locks/01a15671-adac-72f2-a4d4-af8bd78eafdd.lock",
+    "source_base": "33df9083c95e4f838e0eaf34532d3cd3ea6deee0",
+    "source_head": "1559ddb899486f033a61d633616057760fed73e3"
+  },
+  "final_verification": "docs/archive/claw/claw-assistant-core-final-artifacts.json"
+}

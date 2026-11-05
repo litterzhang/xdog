@@ -197,7 +197,7 @@ error, never a separate unknown handler outcome. Intake ACK still does not prove
 Agent execution or user-channel delivery. Existing file/scheduler registrations
 remain compatible. An older daemon lacking `remote-sources-v1` requires explicit
 stop/start before accepting external sources; it is never silently replaced.
-See [external-source definitions, boundaries and verification](../../docs/eyes-remote-sources.md).
+See [external-source definitions, boundaries and verification](../../docs/eyes/sources.md).
 
 ## HTML, Feed and Releases
 
@@ -222,7 +222,7 @@ Packaged complete examples: `html-announcements.json`, `feed-updates.json`,
 `github-releases.json`. New definitions require content-sources-v1 in the live
 daemon; an older instance is never automatically replaced. Old normalized
 first-batch definitions and checkpoints remain compatible. See
-[content sources design and verification](../../docs/eyes-content-sources.md).
+[content sources design and verification](../../docs/eyes/sources.md).
 
 ## Composable detectors and local pushed events
 
@@ -270,7 +270,7 @@ effects retain the existing no-automatic-replay quarantine.
 Requires observation-contracts-v1 / event-sources-v1; older live daemons must be
 restarted explicitly, never automatically replaced. No new public client, service,
 webhook, topic bus, host adapter or Agent execution loop is introduced. See
-[contracts, durability and acceptance](../../docs/eyes-observation-contracts.md).
+[contracts, durability and acceptance](../../docs/eyes/observation-contracts.md).
 
 ## Scheduler sources
 
@@ -293,7 +293,7 @@ zoned timestamps. Intervals use monotonic time (finite seconds, minimum0.001),
 cron uses timezone-aware calendar instants, and suspended periods do not generate
 a catch-up burst. A late active poll coalesces to its latest occurrence. Scheduled
 evidence keeps occurrence identity and planned/observed UTC times, not file paths.
-See [scheduler definition, timing and recovery](../../docs/eyes-scheduler-source.md)
+See [scheduler definition, timing and recovery](../../docs/eyes/sources.md)
 for all modes, DST/clock semantics, mixed-source examples and bounds.
 
 ## Collection and lifetime
@@ -410,7 +410,7 @@ permissions are not an OS sandbox. No TCP/HTTP/Windows transport, installed syst
 daemon, hosted broker, automatic coding startup, API/web source, script handler,
 or harness-specific handler is added to Eyes. Claw can expose its own ACP backend
 through its gateway, without an Eyes dependency or a special router path; see
-[Claw/Eyes ACP](../../docs/claw-eyes-acp.md) for `group:<id>` addressing and setup.
+[Claw/Eyes ACP](../../docs/claw/acp.md) for `group:<id>` addressing and setup.
 Stdio is an optional generic ACP transport; Unix is the XDOG-local transport for
 coding and Claw callbacks.
 
@@ -441,9 +441,9 @@ validation/calendar calculations. Eyes does not depend on ai/agent/coding/claw/f
 The marker excludes the currently unsupported ACP SDK on Python 3.15+; definition
 validation remains usable. Workspace development commands run from repo root.
 
-See [ACP/session/inbox protocol](../../docs/acp-session-routing.md) for explicit
+See [ACP/session/inbox protocol](../../docs/protocols/acp.md) for explicit
 receiver startup, all commands, permission/unknown-result semantics and limits,
-and [current verification](../../docs/unified-inbox-batch-verification.md) for
+and [dated batch acceptance](../../docs/archive/engineering/unified-inbox-batch-verification.md) for
 release evidence. The older `eyes-verification.md` is a historical checkpoint.
 `uv build --package xdog-eyes` ships skill, example, py.typed and license. This
 feature does not push/publish or provision a PyPI publisher/system service.

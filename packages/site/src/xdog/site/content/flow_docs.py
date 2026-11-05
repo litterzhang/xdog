@@ -322,8 +322,6 @@ _ROADMAP = (
             "failed node (script or agent) up to max times with a per-attempt backoff, "
             "then re-raises — preserving fail-fast when retries are exhausted.",
             "Removes the 'one LLM hiccup fails the whole run' failure mode.",
-            "Notably, this was implemented by flow itself: the tools/autoenrich workflow "
-            "(build → gate → validate, with a bounded fix loop) wrote and self-reviewed it.",
         ),
         done=True,
     ),
@@ -336,7 +334,6 @@ _ROADMAP = (
             "progress and skips already-committed work with batch-level at-least-once semantics.",
             "Turns long agent runs from all-or-nothing into recoverable. Codegen honours "
             "it too via FLOW_RUN_ID / FLOW_CHECKPOINT_DIR, so both run paths agree.",
-            "Also implemented by the tools/autoenrich workflow itself.",
         ),
         done=True,
     ),
@@ -348,8 +345,7 @@ _ROADMAP = (
             "wall-clock duration and (for agent nodes) token usage; the executor "
             "delivers them via an on_event callback, and the generated module logs the "
             "same lifecycle to the flow.generated.events logger.",
-            "The foundation for observability and live TUI/web progress. Also "
-            "implemented by the tools/autoenrich workflow itself.",
+            "The foundation for observability and live TUI/web progress.",
         ),
         done=True,
     ),
@@ -361,7 +357,7 @@ _ROADMAP = (
             '(its error recorded in runtime["failed"]) and its downstream sub-tree '
             "skipped, while independent sibling branches still run to completion. The "
             'default on_error:"fail" keeps the fail-fast semantics.',
-            "Implemented by the tools/autoenrich workflow itself; codegen mirrors it.",
+            "Codegen mirrors these execution semantics.",
         ),
         done=True,
     ),
@@ -372,7 +368,7 @@ _ROADMAP = (
             "Done: a workflow (or execute() override) can cap how many nodes run at "
             "once via max_concurrency; fan instances use a separate fan_max_concurrency "
             "limiter. Both default to unlimited; cap the inner group explicitly for provider limits.",
-            "Implemented by the tools/autoenrich workflow itself; codegen mirrors it.",
+            "Codegen mirrors these execution semantics.",
         ),
         done=True,
     ),
@@ -384,7 +380,7 @@ _ROADMAP = (
             "raises WorkflowPaused (the generated module exits with a PAUSED line); "
             "deliver the signal and resume with the same run id to pass the gate. Real "
             "stop-for-approval built on P2 checkpointing.",
-            "Implemented by the tools/autoenrich workflow itself; codegen mirrors it.",
+            "Codegen mirrors these execution semantics.",
         ),
         done=True,
     ),
@@ -396,7 +392,7 @@ _ROADMAP = (
             "(node id, input hash), so a retry or resume with the same input reuses the "
             "result when recorded. This is not exactly-once execution: effects before a "
             "durable record may repeat on retry/resume. Non-deterministic nodes default to running.",
-            "Implemented by the tools/autoenrich workflow itself; codegen mirrors it.",
+            "Codegen mirrors these execution semantics.",
         ),
         done=True,
     ),

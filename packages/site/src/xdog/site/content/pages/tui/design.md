@@ -72,4 +72,4 @@ source/artifacts, not Agent persistence or resumable execution authority. Hosts
 retain permissions, scope, storage and lifecycle fences.
 
 See [API/import reference](/packages/tui/reference) and the
-[terminal verification scope](https://github.com/litterzhang/xdog/blob/main/docs/tui-pi-parity.md).
+[terminal verification scope](https://github.com/litterzhang/xdog/blob/main/docs/archive/tui/tui-pi-parity.md).

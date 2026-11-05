@@ -376,8 +376,8 @@ project follows [semantic versioning](https://semver.org/).
 - Includes the already-merged Linux-focused UI/API simplification: retired
   Coding RPC controls, repository-diff UI, active MCP subscriptions and other
   reviewed extension/MCP interfaces. This includes compatibility removals;
-  consult `docs/agent-ui-simplification-plan.md` and
-  `docs/agent-ui-rpc-host-scope-audit.md` before upgrading integrations.
+  consult `docs/archive/agent-ui/agent-ui-simplification-plan.md` and
+  `docs/archive/agent-ui/agent-ui-rpc-host-scope-audit.md` before upgrading integrations.
 - Synchronized all workspace package versions, internal requirements, lockfile
   and runtime/client version identifiers to 2.4.2. Snapshot and protocol format
   versions are unchanged.
@@ -411,7 +411,7 @@ project follows [semantic versioning](https://semver.org/).
   without pruning, skips or weakened security/lifecycle assertions. Release-version
   metadata, build and transport checks are recorded separately.
 - This patch excludes the concurrently developed test-pruning/concurrency changes.
-  See `docs/ci/2.3.2-investigation.md` for evidence and environment limitations.
+  See `docs/archive/ci/2.3.2-investigation.md` for evidence and environment limitations.
 
 ---
 
@@ -437,7 +437,7 @@ project follows [semantic versioning](https://semver.org/).
   cancel and settle owned model/tool tasks, release request streams, and leave
   shared provider clients under host ownership.
 - Offline SDK examples and isolated multi-process/package validation. See
-  `docs/agent-sdk-service-runtime.md` and its linked acceptance evidence.
+  `docs/archive/agent/agent-sdk-service-runtime.md` and its linked acceptance evidence.
 
 ### Changed
 
@@ -707,7 +707,7 @@ project follows [semantic versioning](https://semver.org/).
   Existing `weixin:<peer>` groups are left on disk; there is no history
   migration. Note that **no peer admission check ships with this** — every
   sender on a channel reaches the bound group. See
-  `docs/one-agent-many-channels.md`.
+  `docs/archive/claw/one-agent-many-channels.md`.
 - **Expired Copilot credentials say so** (`xdog-ai`). The proxy failing after a
   few days was never a refresh bug: the Copilot JWT refreshes correctly. What
   expires underneath is the stored GitHub OAuth token, and GitHub's 401 escaped
@@ -820,7 +820,7 @@ project follows [semantic versioning](https://semver.org/).
 - `packages/flow/examples/service_builder/` — an unattended workflow that builds
   a service from a one-paragraph idea, one hour-sized increment per run, halting
   itself when the acceptance criteria are met or when it stops making progress.
-  See [`docs/service-builder.md`](docs/service-builder.md).
+  See [`docs/flow/service-builder.md`](docs/flow/service-builder.md).
 
 ---
 
@@ -854,7 +854,7 @@ a script node that reads or writes outside its workspace now fails.
   never part of the workflow file: a workflow that could declare its own access
   would not be confined by it.
 - Subflows inherit their parent's workspace, grants and confined flag.
-- `docs/script-node-confinement.md` — what a child process plus Landlock would
+- `docs/archive/flow/script-node-confinement.md` — what a child process plus Landlock would
   add, measured rather than argued, and why it is not built yet.
 
 ### Changed

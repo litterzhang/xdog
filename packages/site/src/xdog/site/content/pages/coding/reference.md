@@ -177,5 +177,5 @@ same close and returns a concurrent Future; do not block an async caller loop wi
 embedding or Agent-owned child execution.
 
 See the [package README](https://github.com/litterzhang/xdog/blob/main/packages/coding/README.md)
-and [ACP routing protocol](https://github.com/litterzhang/xdog/blob/main/docs/acp-session-routing.md)
+and [ACP routing protocol](https://github.com/litterzhang/xdog/blob/main/docs/protocols/acp.md)
 for detailed user configuration and retained APIs.

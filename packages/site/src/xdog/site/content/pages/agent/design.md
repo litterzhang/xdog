@@ -102,5 +102,5 @@ are not an Agent SDK supervisor service. Children require current parent-subset
 authority; saved records, role labels and skill text grant no access.
 
 See [reference](/packages/agent/reference),
-[registry contract](https://github.com/litterzhang/xdog/blob/main/docs/host-owned-tool-registry.md)
-and [capability SDK example](https://github.com/litterzhang/xdog/blob/main/docs/sdk-capability-assembly.md).
+[registry contract](https://github.com/litterzhang/xdog/blob/main/docs/agent/tool-repo.md)
+and [capability SDK example](https://github.com/litterzhang/xdog/blob/main/docs/agent/capabilities.md).
