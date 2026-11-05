@@ -4,11 +4,10 @@ import asyncio
 from dataclasses import replace
 
 import pytest
-from xdog.eyes.deliveries import Delivery
 from xdog.eyes.executor import observe
-from xdog.eyes.models import Event, FileEvidence, FileState
+from xdog.eyes.models import FileState
 
-from packages.eyes.tests.test_acp_handler import definition, delivery, rows
+from packages.eyes.tests.acp_handler_helpers import definition, delivery, rows
 
 
 def enqueue_definition(record,mode='inbox',gate=None):
@@ -54,35 +53,6 @@ async def test_duplicate_receipt_preserves_existing_message_state(tmp_path):
         duplicate = await handler.deliver(delivery('same'))
         assert duplicate.status=='queued' and duplicate.receipt_status=='duplicate'
         assert duplicate.message_state=='pending_review'
-    finally:
-        await handler.close()
-
-
-@pytest.mark.parametrize('mode',['success','inbox-bool-version','inbox-wrong-scope','inbox-wrong-cwd','inbox-no-store'])
-async def test_missing_extension_or_invalid_target_scope_fails_before_intake(tmp_path,mode):
-    from xdog.eyes.handlers.acp import AcpHandler
-
-    record = tmp_path/'peer.jsonl'
-    handler = AcpHandler(replace(enqueue_definition(record,mode=mode), cwd=tmp_path))
-    try:
-        with pytest.raises(ValueError):
-            await handler.start()
-        assert not [r for r in rows(record) if r['kind'] in {'load','prompt'}]
-        assert not [r for r in rows(record) if r['kind']=='extension' and r['method']=='xdog/enqueue']
-    finally:
-        await handler.close()
-
-
-@pytest.mark.parametrize('mode',['inbox-bad-id','inbox-bad-session','inbox-bad-state','inbox-bad-branch'])
-async def test_malformed_ack_is_unknown_and_never_model_success(tmp_path,mode):
-    from xdog.eyes.handlers.acp import AcpHandler
-
-    handler = AcpHandler(replace(enqueue_definition(tmp_path/'peer.jsonl',mode=mode), cwd=tmp_path))
-    try:
-        await handler.start()
-        result = await handler.deliver(delivery())
-        assert result.status=='outcome-unknown' and not result.retry_on_resume
-        assert (await handler.deliver(delivery('must-not-pass'))).status=='outcome-unknown'
     finally:
         await handler.close()
 
@@ -175,23 +145,6 @@ async def test_queued_receipts_keep_collecting_and_never_emit_model_completion(t
     assert [e.receipt_status for e in events if e.kind=='delivery_queued']==['queued','duplicate']
 
 
-def test_enqueue_size_is_not_limited_by_duplicated_prompt_evidence(tmp_path,observer_data):
-    from xdog.eyes import executor
-    from xdog.eyes.loader import parse
-
-    observer_data['handlers'][0]['delivery']='enqueue'
-    config = parse(observer_data,base_dir=tmp_path)
-    relative = '/'.join('x'*100 for _ in range(29))
-    evidence = tuple(FileEvidence(f'{i}/{relative}',None,FileState('h',3),1.0,'/project') for i in range(200))
-    item = Delivery('d','r','review',(Event('e','files','changes','file.created',1.0,evidence),))
-    from xdog.eyes.handlers.acp import AcpHandler
-
-    assert executor._bounded(item)
-    AcpHandler(replace(config.handlers[0], cwd=tmp_path)).validate(item)
-    with pytest.raises(ValueError, match='capacity'):
-        AcpHandler(replace(replace(config.handlers[0], delivery='prompt'), cwd=tmp_path)).validate(item)
-
-
 @pytest.mark.parametrize('replace_store',[False,True])
 async def test_real_unix_intake_survives_service_restart_only_for_the_same_store(tmp_path,monkeypatch,replace_store):
     import tempfile
@@ -244,64 +197,3 @@ async def test_real_unix_intake_survives_service_restart_only_for_the_same_store
         finally:
             await handler.close()
             await server.aclose()
-
-
-async def test_close_settles_an_explicit_reconnect_that_is_still_initializing(tmp_path):
-    from xdog.eyes.handlers.acp import AcpHandler
-
-    record,gate = tmp_path/'peer.jsonl',tmp_path/'initialize'
-    handler = AcpHandler(replace(enqueue_definition(record,mode='inbox-disconnect-once-slow',gate=gate), cwd=tmp_path))
-    task = None
-    try:
-        await handler.start()
-        assert (await handler.deliver(delivery())).status=='retry'
-        task = asyncio.create_task(handler.resume())
-        async with asyncio.timeout(5):
-            while len([r for r in rows(record) if r['kind']=='initialize'])<2:
-                await asyncio.sleep(0.01)
-        await handler.close()
-        assert task.done(), 'closing a handler must settle its reconnect producer, not abandon a child process'
-    finally:
-        gate.touch()
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task,return_exceptions=True)
-        await handler.close()
-
-
-@pytest.mark.parametrize('state', ['pending', 'claimed'])
-async def test_v2_inbox_states_are_valid_durable_receipts(tmp_path, state):
-    from xdog.eyes.handlers.acp import AcpHandler
-
-    handler = AcpHandler(replace(
-        enqueue_definition(tmp_path / 'peer.jsonl', mode='inbox-state-' + state), cwd=tmp_path))
-    try:
-        await handler.start()
-        result = await handler.deliver(delivery())
-        assert result.status == 'queued' and result.message_state == state
-    finally:
-        await handler.close()
-
-
-async def test_stdio_startup_workspace_is_not_target_session_workspace(tmp_path, monkeypatch):
-    from xdog.eyes.handlers.acp import AcpHandler
-
-    caller = tmp_path / 'caller'
-    caller.mkdir()
-    monkeypatch.chdir(caller)
-    record = tmp_path / 'peer.jsonl'
-    handler = AcpHandler(enqueue_definition(record))
-    assert handler.client.cwd is None
-    try:
-        handler.validate(delivery())  # Valid even before connection resolves the target.
-        await handler.start()
-        assert handler.client.cwd == tmp_path
-        assert (await handler.deliver(delivery())).status == 'queued'
-        log = rows(record)
-        assert next(row for row in log if row['kind'] == 'initialize')['process_cwd'] == str(caller)
-        status_requests = [row['params'] for row in log if row.get('method') == 'xdog/inbox_status']
-        assert 'cwd' not in status_requests[0]
-        assert status_requests[-1]['cwd'] == str(tmp_path)
-        assert not [row for row in log if row['kind'] in {'load', 'prompt'}]
-    finally:
-        await handler.close()

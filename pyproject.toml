@@ -123,7 +123,7 @@ filterwarnings = [
 ]
 # Run every retained test; concurrency, not deselection, keeps the feedback loop short.
 # Use `uv run pytest -n 0` when debugging a test in a single process.
-addopts = "--import-mode=importlib -n 6 --dist load --maxschedchunk=4"
+addopts = "--import-mode=importlib -n 2 --dist load --maxschedchunk=4"
 
 [tool.ruff]
 line-length = 120
@@ -143,17 +143,11 @@ select = ["E", "F", "I", "W"]
 # strict 120-col limit still applies to new code and to flow/site.
 "packages/agent/src/xdog/agent/tools/tool_filesystem.py" = ["E501"]
 "packages/agent/tests/test_agent_loop.py" = ["E501"]
-"packages/agent/tests/test_before_after_hooks.py" = ["E501"]
-"packages/agent/tests/test_parallel_tool_execution.py" = ["E501"]
 "packages/ai/src/xdog/ai/core.py" = ["E501"]
 "packages/ai/src/xdog/ai/protocols/openai_responses.py" = ["E501"]
 "packages/ai/src/xdog/ai/providers/copilot.py" = ["E501"]
 "packages/ai/src/xdog/ai/vendors/copilot/_model_sync.py" = ["E501"]
 "packages/claw/src/xdog/claw/cli/cli.py" = ["E501"]
-"packages/claw/tests/test_agent_session.py" = ["E501"]
-"packages/claw/tests/test_gateway.py" = ["E501"]
-"packages/claw/tests/test_scheduler.py" = ["E501"]
-"packages/claw/tests/test_tools_memory.py" = ["E501"]
 "packages/tui/src/xdog/tui/components/markdown.py" = ["E501"]
 
 [tool.mypy]

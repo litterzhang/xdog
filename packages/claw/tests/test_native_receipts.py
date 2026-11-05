@@ -7,8 +7,8 @@ import asyncio
 import pytest
 from xdog.claw.core.inputs.models import InputScope
 
-from packages.claw.tests.test_gateway_inputs import gateway as gateway
-from packages.claw.tests.test_gateway_inputs import receive, send
+from packages.claw.tests.gateway_inputs_helpers import gateway as gateway
+from packages.claw.tests.gateway_inputs_helpers import receive, send
 
 
 def request(owner_namespace, **changes):
@@ -232,7 +232,7 @@ async def test_outstanding_receipt_waits_are_bounded_without_blocking_controls(g
 async def test_actual_tui_reconciles_ack_loss_over_unix_without_replaying_the_agent(gateway):
     from xdog.claw.channels.tui.tui_app import ChatApp
 
-    from packages.claw.tests.test_native_submission import drain
+    from packages.claw.tests.native_submission_helpers import drain
 
     server, entered, release, contexts, socket_path = gateway
     app = ChatApp(socket_path)

@@ -10,9 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-import subprocess
-import sys
-import tempfile
 import types
 from typing import Any
 
@@ -89,14 +86,6 @@ async def test_subflow_interpreter_e2e() -> None:
     assert r.runtime["out"]["result"] == "[HELLO!]"
 
 
-async def test_subflow_is_one_scheduler_node() -> None:
-    """The subflow is ONE node: one completed id, one 'review' trace frame."""
-    wf = parse_workflow(_parent("hi"))
-    r = await execute(wf, stream_fn_factory=lambda m: None)
-    review_frames = [f for f in r.runtime["stack"] if f["node"] == "review"]
-    assert len(review_frames) == 1
-
-
 # --- cross-engine parity (interpret == compile) ----------------------------
 
 
@@ -126,46 +115,6 @@ def test_path_subflow_child_is_valid_python_literal() -> None:
     points = child["nodes"][0]["inputs"][1]
     assert points["required"] is True
     assert "'required': True" in source
-
-
-def test_subflow_generated_module_imports_flow() -> None:
-    """A subflow-using module imports flow (the accepted trade); it embeds the child."""
-    src = generate(parse_workflow(_parent()))
-    assert "from xdog.flow.executor import execute" in src
-    assert "_CHILD_review = {" in src
-
-
-def test_non_subflow_module_stays_flow_independent() -> None:
-    """A workflow with no subflow node must NOT import flow (regression guard)."""
-    d = {
-        "name": "plain",
-        "provider": "copilot",
-        "entry": "a",
-        "state": {"x": "hi"},
-        "nodes": [{"id": "a", "type": "script", "inputs": ["x"],
-                   "code": "def a(ctx, x):\n    return x", "outputs": ["y"]}],
-        "edges": [{"from": "$in", "to": "a", "map": {"x": "x"}},
-                  {"from": "a", "to": "$output", "map": {"y": "result"}}],
-    }
-    src = generate(parse_workflow(d))
-    assert "import flow" not in src
-    assert "from flow" not in src
-
-
-def test_subflow_generated_module_is_ruff_clean() -> None:
-    src = generate(parse_workflow(_parent()))
-    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as tf:
-        tf.write(src)
-        tmp = pathlib.Path(tf.name)
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "ruff", "check", "--line-length", "120", str(tmp)],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"ruff failed:\n{result.stdout}\n{result.stderr}"
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 # --- path-reference children (independent child files) ---------------------

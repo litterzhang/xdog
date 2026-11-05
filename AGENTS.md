@@ -11,7 +11,7 @@ XDOG is a local-first Python 3.12+ `uv` workspace; its core tools do not require
 uv sync
 
 # Core test, lint, and type-check commands used by CI
-uv run python scripts/test.py  # all configured test paths, balanced package workers
+uv run python scripts/test.py  # all configured test paths, at most two workers
 uv run pytest -q              # direct pytest alternative; supports normal selection flags
 uv run ruff check packages
 uv run mypy --strict \
@@ -117,8 +117,28 @@ fresh test results. Package-local Flow docs remain under `packages/flow/docs/`.
   data migration unless explicitly requested. Removing code is not permission
   to erase user data or reject valid optional fields in the current format.
 
-### Verify behavior, not just structure
+### Testing standard: minimal and risk-driven
 
+- Write as few tests as necessary to protect critical behavior. Keep the main suite
+  small; adding tests is not a default deliverable for every code change. First
+  inspect existing tests and extend or consolidate a relevant scenario rather than
+  adding another overlapping test. A new test must protect a distinct, important risk.
+- Retain core user journeys, key public interface contracts, permission/security
+  boundaries, data consistency and important real-bug regressions. Do not target code
+  coverage, branch coverage, or a test for every function, class, module or field.
+- Prefer observable outcomes over implementation details. Avoid tests of ordinary
+  defaults, trivial accessors, internal class layout, source-code strings or mock
+  call choreography unless that detail is itself an essential public contract.
+- Parameterize only scenarios with independent behavioral value. Avoid Cartesian
+  products of equivalent inputs, operation aliases, error types and presentation
+  variants. A representative case should exercise the risk, not merely inflate counts.
+- Delete or merge redundant, low-risk and obsolete tests when changing their area;
+  do not preserve tests for retired behavior. Do not hide excess tests with skips,
+  collection exclusions, another suite or conversion of parameterized cases into
+  internal loops. Preserve critical assertions when consolidating tests.
+- Keep test execution to at most two pytest workers and never run multiple full
+  suites simultaneously. The suite size is a maintenance budget, not a quota: do
+  not add tests to fill it or delete a necessary safety regression just to hit a count.
 - Add deterministic regressions at the layer that owns the behavior and a small
   number of real integration checks at changed boundaries. Prefer events/barriers
   and actual receipts over sleeps, retries or assertions about implementation text.

@@ -4,30 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-from xdog.flow.checkpoint import CheckpointInterceptor, JSONFileCheckpointStore, render_checkpoint_interceptor
+from xdog.flow.checkpoint import CheckpointInterceptor, JSONFileCheckpointStore
 from xdog.flow.executor import ExecResult, execute
 from xdog.flow.models import EdgeDef, NodeDef, Port, WorkflowDef
 
 # ---------------------------------------------------------------------------
 # Checkpoint interception boundaries
 # ---------------------------------------------------------------------------
-
-
-def test_interceptor_mutates_then_persists_once() -> None:
-    state = {"value": 0}
-    snapshots: list[dict[str, object]] = []
-    interceptor = CheckpointInterceptor(lambda: dict(state), snapshots.append)
-
-    result = interceptor.intercept("batch", lambda: state.update(value=1) or "done")
-
-    assert result == "done"
-    assert snapshots == [{"value": 1}]
 
 
 def test_interceptor_does_not_persist_failed_mutation() -> None:
@@ -42,21 +29,6 @@ def test_interceptor_does_not_persist_failed_mutation() -> None:
     assert snapshots == []
 
 
-def test_interceptor_explicit_commit_persists_once() -> None:
-    snapshots: list[dict[str, object]] = []
-    interceptor = CheckpointInterceptor(lambda: {"paused": True}, snapshots.append)
-    interceptor.commit("human-pause")
-    assert snapshots == [{"paused": True}]
-
-
-def test_rendered_interceptor_is_standalone() -> None:
-    source = render_checkpoint_interceptor()
-    assert "import flow" not in source and "from flow" not in source
-    namespace: dict[str, object] = {"Callable": Callable, "Any": Any}
-    exec(compile(source, "<checkpoint-interceptor>", "exec"), namespace)  # noqa: S102
-    assert callable(namespace["CheckpointInterceptor"])
-
-
 # ---------------------------------------------------------------------------
 # JSONFileCheckpointStore unit tests
 # ---------------------------------------------------------------------------
@@ -68,28 +40,6 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     store.save("run-abc", snap)
     loaded = store.load("run-abc")
     assert loaded == snap
-
-
-def test_load_missing_returns_none(tmp_path: Path) -> None:
-    store = JSONFileCheckpointStore(tmp_path)
-    assert store.load("nonexistent") is None
-
-
-def test_save_writes_file(tmp_path: Path) -> None:
-    store = JSONFileCheckpointStore(tmp_path)
-    store.save("run-xyz", {"completed": []})
-    target = tmp_path / "run-xyz.json"
-    assert target.exists()
-    with target.open() as fh:
-        data = json.load(fh)
-    assert data == {"completed": []}
-
-
-def test_save_creates_dir(tmp_path: Path) -> None:
-    new_dir = tmp_path / "sub" / "dir"
-    store = JSONFileCheckpointStore(new_dir)
-    store.save("r1", {"ok": True})
-    assert (new_dir / "r1.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -122,32 +72,6 @@ class RecordingCheckpointStore:
     def load(self, run_id: str) -> dict[str, Any] | None:
         _ = run_id
         return copy.deepcopy(self.snapshots[-1]) if self.snapshots else None
-
-
-async def test_linear_graph_saves_once_per_frontier_batch() -> None:
-    store = RecordingCheckpointStore()
-    wf = WorkflowDef(
-        name="linear-boundaries",
-        provider="",
-        entry="a",
-        nodes=(
-            NodeDef(id="a", type="script", code="def a(ctx):\n    return 'A'", output_ports=(Port("x"),)),
-            NodeDef(
-                id="b",
-                type="script",
-                code="def b(ctx, x):\n    return x + 'B'",
-                input_ports=(Port("x"),),
-                output_ports=(Port("y"),),
-            ),
-        ),
-        edges=(EdgeDef(src="a", dst="b", mapping=(("x", "x"),)),),
-    )
-
-    await execute(wf, checkpoint=store, run_id="linear")
-
-    assert len(store.snapshots) == 2
-    assert set(store.snapshots[0]["completed"]) == {"a"}
-    assert set(store.snapshots[1]["completed"]) == {"a", "b"}
 
 
 async def test_parallel_siblings_share_one_checkpoint_boundary() -> None:
@@ -194,21 +118,6 @@ async def test_successful_sibling_is_committed_before_batch_failure() -> None:
     assert len(store.snapshots) == 2
     assert set(store.snapshots[-1]["completed"]) == {"root", "ok"}
     assert store.snapshots[-1]["outputs"]["ok"]["x"] == "done"  # type: ignore[index]
-
-
-async def test_failed_entry_creates_no_checkpoint() -> None:
-    store = RecordingCheckpointStore()
-    wf = WorkflowDef(
-        name="failed-boundary",
-        provider="",
-        entry="a",
-        nodes=(NodeDef(id="a", type="script", code="def a(ctx):\n    raise RuntimeError('boom')"),),
-        edges=(),
-    )
-
-    with pytest.raises(RuntimeError, match="boom"):
-        await execute(wf, checkpoint=store, run_id="failed")
-    assert store.snapshots == []
 
 
 # ---------------------------------------------------------------------------

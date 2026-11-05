@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from xdog.skills.goal.host import OperationContext, OwnerRetired
 
-from packages.skills.tests.goal.test_reminder_review import receipt_states
+from packages.skills.tests.goal.reminder_review_helpers import receipt_states
 from packages.skills.tests.goal.test_runtime import close, setup
 
 USER = OperationContext(True)

@@ -203,7 +203,7 @@ def test_promoted_queued_message_keeps_its_image_bytes(coding_session):
     from xdog.ai.types import ImageContent, Model
     from xdog.tui.attachments import attachment
 
-    from packages.coding.tests.test_child_image_submission import PNG
+    from packages.coding.tests.child_image_submission_helpers import PNG
 
     entered, release, contexts = held_model(coding_session)
     ui = InteractiveMode(coding_session)

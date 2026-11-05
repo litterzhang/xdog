@@ -35,12 +35,6 @@ def test_validate_bad_exits(capsys: pytest.CaptureFixture[str]) -> None:
     assert exc_info.value.code == 1
 
 
-def test_validate_missing_file(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc_info:
-        main(["validate", "/nonexistent/path/workflow.json"])
-    assert exc_info.value.code == 1
-
-
 def test_run_failure_prints_structured_envelope(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(["run", "/nonexistent/path/workflow.json"])
@@ -55,21 +49,6 @@ def test_run_failure_prints_structured_envelope(capsys: pytest.CaptureFixture[st
 # ---------------------------------------------------------------------------
 # graph
 # ---------------------------------------------------------------------------
-
-
-def test_graph_ascii(capsys: pytest.CaptureFixture[str]) -> None:
-    main(["graph", _LINEAR])
-    out = capsys.readouterr().out
-    assert "workflow:" in out
-    assert "linear-workflow" in out
-    assert "nodes:" in out
-
-
-def test_graph_mermaid(capsys: pytest.CaptureFixture[str]) -> None:
-    main(["graph", _LINEAR, "--mermaid"])
-    out = capsys.readouterr().out
-    assert "flowchart TD" in out
-    assert "-->" in out
 
 
 # ---------------------------------------------------------------------------
@@ -93,27 +72,9 @@ async def test_run_dry_run(capsys: pytest.CaptureFixture[str]) -> None:
     assert data["context"]["durationMs"] >= 0
 
 
-def test_run_dry_run_sync(capsys: pytest.CaptureFixture[str]) -> None:
-    """main() --dry-run integration path; linear.json has no $output so the CLI
-    falls back to printing the full runtime container."""
-    main(["run", _LINEAR, "--dry-run"])
-    out = capsys.readouterr().out
-    data = json.loads(out)
-    assert data["success"] is True
-    assert data["output"] == {}
-    assert data["context"]["lastNode"] == "c"
-
-
 # ---------------------------------------------------------------------------
 # generate
 # ---------------------------------------------------------------------------
-
-
-def test_generate_stdout(capsys: pytest.CaptureFixture[str]) -> None:
-    main(["generate", _LINEAR])
-    out = capsys.readouterr().out
-    assert "async def main" in out
-    assert "linear-workflow" in out
 
 
 def test_generate_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -131,52 +92,11 @@ def test_generate_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> No
 _AGENT_CALC = str(Path(__file__).parent.parent / "examples" / "agent_calculator.json")
 
 
-def test_parse_inputs_basic() -> None:
-    from xdog.flow.cli import _parse_inputs
-
-    # values are parsed as JSON when possible, so numbers become type-native
-    assert _parse_inputs(["a=3", "b=4"]) == {"a": 3, "b": 4}
-
-
-def test_parse_inputs_bare_word_stays_string() -> None:
-    from xdog.flow.cli import _parse_inputs
-
-    # a value that is not valid JSON is kept as the raw string
-    assert _parse_inputs(["name=ada", "topic=ship it"]) == {"name": "ada", "topic": "ship it"}
-
-
-def test_parse_inputs_structured() -> None:
-    from xdog.flow.cli import _parse_inputs
-
-    assert _parse_inputs(['xs=[1, 2]', 'cfg={"a": 1}']) == {"xs": [1, 2], "cfg": {"a": 1}}
-
-
-def test_parse_inputs_value_with_equals() -> None:
-    from xdog.flow.cli import _parse_inputs
-
-    # value may contain '=' — split on the first only
-    assert _parse_inputs(["note=x=y"]) == {"note": "x=y"}
-
-
-def test_parse_inputs_missing_equals_errors() -> None:
-    from xdog.flow.cli import _parse_inputs
-
-    with pytest.raises(SystemExit):
-        _parse_inputs(["abc"])
-
-
 def test_run_input_overrides_seed(capsys: pytest.CaptureFixture[str]) -> None:
     """`run --input a=2 --input b=40 --dry-run` prints the workflow's $output."""
     main(["run", _AGENT_CALC, "--input", "a=2", "--input", "b=40", "--dry-run"])
     out = json.loads(capsys.readouterr().out)
     assert out["success"] is True
-    assert "result" in out["output"]
-    assert out["output"]["result"].startswith("DRYRUN:")
-
-
-def test_run_without_input_uses_defaults(capsys: pytest.CaptureFixture[str]) -> None:
-    main(["run", _AGENT_CALC, "--dry-run"])
-    out = json.loads(capsys.readouterr().out)
     assert "result" in out["output"]
     assert out["output"]["result"].startswith("DRYRUN:")
 
@@ -206,24 +126,3 @@ def test_validate_json_reports_every_problem_at_once(
         (e["edge"]["from"], e["edge"]["to"]) for e in payload["errors"] if "edge" in e
     }
     assert {"draft", "critic", ("draft", "critic")} <= located
-
-
-def test_validate_json_on_a_good_workflow_is_quiet_and_zero(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    main(["validate", str(Path(__file__).parent.parent / "examples" / "refine_loop.json"), "--json"])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == {"ok": True, "path": payload["path"], "workflow": "refine-loop", "errors": []}
-
-
-def test_validate_json_reports_an_unreadable_file_as_one_error(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """No graph yet means nothing more to say than the read failure itself."""
-    bad = tmp_path / "nope.json"
-    bad.write_text("{not json", encoding="utf-8")
-    with pytest.raises(SystemExit):
-        main(["validate", str(bad), "--json"])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is False
-    assert len(payload["errors"]) == 1

@@ -10,8 +10,8 @@ from xdog.eyes.handlers.acp import AcpHandler
 from xdog.eyes.models import ConditionDetectorDef, ObserverDef, Predicate, RecordDetectorDef, RouteDef
 from xdog.eyes.sources.remote import RemoteSampler
 
+from packages.eyes.tests.acp_handler_helpers import rows
 from packages.eyes.tests.test_acp_enqueue import enqueue_definition
-from packages.eyes.tests.test_acp_handler import rows
 from packages.eyes.tests.test_github_source import issue, source
 from packages.eyes.tests.test_http_source import Transport
 

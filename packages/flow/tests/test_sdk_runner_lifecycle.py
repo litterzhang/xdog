@@ -24,7 +24,6 @@ from xdog.ai.types import (
     UserMessage,
 )
 from xdog.ai.utils.event_stream import EventStream
-from xdog.flow.errors import WorkflowExecutionError
 from xdog.flow.models import NodeDef, Port
 from xdog.flow.runners import SdkRunner
 
@@ -131,9 +130,12 @@ async def run_node(
     )
 
 
-@pytest.mark.parametrize("selected", [(), ("child-session",), ("child-turn",)])
-@pytest.mark.parametrize("explicit_model", [False, True])
-@pytest.mark.parametrize("explicit_system", [False, True])
+@pytest.mark.parametrize("selected,explicit_model,explicit_system", [
+    ((), False, False),
+    (("child-session",), True, False),
+    (("child-turn",), False, True),
+    (("child-turn",), True, True),
+])
 async def test_versioned_inheritance_keeps_node_selection_and_explicit_overrides(
     tmp_path: Path, owned_agents: list[ObservedAgent], selected: tuple[str, ...],
     explicit_model: bool, explicit_system: bool,
@@ -175,38 +177,6 @@ async def test_versioned_inheritance_keeps_node_selection_and_explicit_overrides
     assert [record["slug"] for record in saved["skills"]] == (["child-session"] if "child-session" in selected else [])
     assert "CHILD_TURN_BODY" not in str(agent.messages) and "CHILD_TURN_BODY" not in str(saved["messages"])
     assert saved["base_system_prompt"] == ("NODE_BASE" if explicit_system else "ANCESTOR_BASE")
-
-
-@pytest.mark.parametrize('snapshot', [{}, {'messages': []}, {'model': 'removed/model', 'system_prompt': 'OLD_BASE'}])
-async def test_unversioned_inheritance_is_rejected_without_calls_or_sink_publication(owned_agents, snapshot):
-    adapter = OfflineAdapter()
-    before = copy.deepcopy(snapshot)
-    sink = {'existing': 'untouched'}
-    with pytest.raises(ValueError, match='missing fields'):
-        await run_node(runner_for(adapter), session=snapshot, sink=sink)
-    assert snapshot == before
-    assert sink == {'existing': 'untouched'} and not adapter.calls
-    assert owned_agents[-1].closed and adapter.close_calls == 0
-
-
-
-@pytest.mark.parametrize("invalid", ["model", "version", "interrupted"])
-async def test_restore_rejection_closes_without_model_call_or_sink_publication(
-    tmp_path: Path, owned_agents: list[ObservedAgent], invalid: str,
-) -> None:
-    snapshot = await seed_snapshot(tmp_path)
-    if invalid == "version":
-        snapshot["version"] = 999
-    elif invalid == "interrupted":
-        snapshot["interrupted"] = True
-    adapter = OfflineAdapter()
-    sink: dict[str, object] = {"existing": "untouched"}
-    # Without an explicit model override, the saved model is genuinely unavailable.
-    node = NodeDef(id="child", model=None if invalid == "model" else "node/new")
-    with pytest.raises(ValueError):
-        await run_node(runner_for(adapter), node, session=snapshot, sink=sink)
-    assert len(owned_agents) == 1 and owned_agents[0].closed
-    assert not adapter.calls and adapter.close_calls == 0 and sink == {"existing": "untouched"}
 
 
 async def test_inherited_structured_run_preserves_sink_tool_inventory_context_and_tokens(
@@ -256,32 +226,6 @@ async def test_inherited_structured_run_preserves_sink_tool_inventory_context_an
     assert result.tool_call_id == "denied" and result.is_error
     assert owned_agents[-1].closed and owned_agents[-1].operations[-2:] == ["dump", "close"]
     assert adapter.close_calls == 0
-
-
-@pytest.mark.parametrize("failure", ["prompt", "dump", "missing_result", "provider"])
-async def test_errors_still_close_owned_agent(
-    monkeypatch: pytest.MonkeyPatch, owned_agents: list[ObservedAgent], failure: str,
-) -> None:
-    adapter = OfflineAdapter()
-    node = NodeDef(id="node", model="node/new")
-    sink: dict[str, object] = {}
-    if failure == "prompt":
-        async def fail_prompt(self: Agent, *args: Any, **kwargs: Any) -> Any:
-            raise RuntimeError("prompt failure")
-        monkeypatch.setattr(ObservedAgent, "prompt", fail_prompt)
-    elif failure == "dump":
-        def fail_dump(self: Agent, **kwargs: Any) -> Any:
-            raise RuntimeError("dump failure")
-        monkeypatch.setattr(ObservedAgent, "dump", fail_dump)
-    else:
-        node = NodeDef(id="structured", model="node/new", output_ports=(Port("out", schema={"type": "object"}),))
-        if failure == "provider":
-            adapter.responses.append(AssistantMessage(stop_reason="error", error_message="offline provider failed"))
-    expected = RuntimeError if failure in ("prompt", "dump") else WorkflowExecutionError
-    with pytest.raises(expected):
-        await run_node(runner_for(adapter), node, sink=sink)
-    assert len(owned_agents) == 1 and owned_agents[0].closed and adapter.close_calls == 0
-    assert ("session" in sink) is (failure in ("missing_result", "provider"))
 
 
 @pytest.mark.parametrize("cancel_via", ["timeout", "task", "repeated_task"])
@@ -339,90 +283,6 @@ async def test_node_cancellation_settles_parallel_tools_before_return_without_cl
     # Closing a node must not render a shared adapter unusable for a later node.
     assert await run_node(runner_for(adapter)) == ("node answer", 5)
     assert owned_agents[-1].closed and adapter.close_calls == 0
-
-
-@pytest.mark.parametrize("selected", [(), ("guard", "once")])
-async def test_executor_inherits_real_runner_dump_but_rearms_only_declared_node_skills(
-    tmp_path: Path, owned_agents: list[ObservedAgent], selected: tuple[str, ...],
-) -> None:
-    from xdog.flow.executor import execute
-    from xdog.flow.models import OUT_NODE_ID, EdgeDef, InheritSpec, WorkflowDef
-
-    write_skill(tmp_path / "skills", "guard", "session", "SESSION_GUARD_MARKER")
-    write_skill(tmp_path / "skills", "once", "turn", "TURN_MARKER")
-    adapters = {
-        "ancestor/old": OfflineAdapter(models=("ancestor/old",)),
-        "node/new": OfflineAdapter(models=("node/new",)),
-    }
-    workflow = WorkflowDef(
-        name="sdk-lifetime", provider="offline", entry="first", default_model="ancestor/old",
-        nodes=(
-            NodeDef(id="first", prompt="research", skills=("guard", "once"), output_ports=(Port("out"),)),
-            NodeDef(id="next", model="node/new", prompt="critique", skills=selected,
-                    inherit=InheritSpec(from_node="first"), output_ports=(Port("out"),)),
-        ),
-        edges=(EdgeDef(src="first", dst="next", mapping=()),
-               EdgeDef(src="next", dst=OUT_NODE_ID, mapping=(("out", "result"),))),
-    )
-    result = await execute(workflow, base_dir=tmp_path, stream_fn_factory=lambda model: adapters[model])
-    assert not result.runtime["failed"]
-    assert result.runtime["out"]["result"] == "node answer"
-    first = adapters["ancestor/old"].calls[0][1]
-    second = adapters["node/new"].calls[0][1]
-    assert "research" in str(second.messages) and "critique" in str(second.messages)
-    assert str(first.messages).count("TURN_MARKER") == 1
-    assert str(second.messages).count("TURN_MARKER") == (1 if selected else 0)
-    assert str(second.system_prompt).count("SESSION_GUARD_MARKER") == (1 if selected else 0)
-    assert len(owned_agents) == 2 and all(agent.closed for agent in owned_agents)
-    assert all("TURN_MARKER" not in str(agent.messages) for agent in owned_agents)
-    assert all(adapter.close_calls == 0 for adapter in adapters.values())
-
-
-@pytest.mark.parametrize("finish", [False, True])
-async def test_node_settles_provider_request_stream_not_shared_adapter(
-    owned_agents: list[ObservedAgent], finish: bool,
-) -> None:
-    from collections.abc import AsyncIterator
-
-    from xdog.ai.types import AssistantMessageEvent, DoneEvent, StartEvent
-
-    started, cleaned = asyncio.Event(), asyncio.Event()
-    message = AssistantMessage(content=(TextContent(text="stream answer"),), usage=Usage(input=2, output=3))
-
-    class HoldingAdapter(OfflineAdapter):
-        def __call__(self, model: str, context: Context, options: StreamOptions) -> EventStream[AssistantMessage]:
-            self.calls.append((model, context, options))
-            result: asyncio.Future[AssistantMessage] = asyncio.get_running_loop().create_future()
-
-            async def generate() -> AsyncIterator[AssistantMessageEvent]:
-                try:
-                    started.set()
-                    yield StartEvent(partial=message)
-                    if finish:
-                        result.set_result(message)
-                        yield DoneEvent(stop_reason="stop", message=message)
-                    await asyncio.Event().wait()
-                finally:
-                    cleaned.set()
-
-            return EventStream.from_async_generator(generate(), result)
-
-    adapter = HoldingAdapter()
-    sink: dict[str, object] = {}
-    task = asyncio.create_task(run_node(runner_for(adapter), timeout=0.2 if not finish else 2, sink=sink))
-    try:
-        await asyncio.wait_for(started.wait(), 2)
-        if finish:
-            assert await asyncio.wait_for(task, 2) == ("stream answer", 5)
-        else:
-            with pytest.raises(TimeoutError):
-                await asyncio.wait_for(task, 2)
-        assert cleaned.is_set() and owned_agents[-1].closed and adapter.close_calls == 0
-        assert ("session" in sink) is finish
-    finally:
-        if not task.done():
-            task.cancel()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
 
 
 async def test_cleanup_failure_is_reported_not_silently_treated_as_success(

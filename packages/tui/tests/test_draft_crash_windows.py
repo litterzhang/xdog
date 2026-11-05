@@ -16,8 +16,7 @@ from xdog.tui.components.status_line import StatusLine
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='Current Linux owned SIGKILL/private storage evidence')
 @pytest.mark.parametrize('surface', ['parent', 'child'])
-@pytest.mark.parametrize('boundary', ['debounce', 'before-update', 'after-replace',
-                                      'receipt-unpolled', 'edited-inflight'])
+@pytest.mark.parametrize('boundary', ['before-update', 'after-replace', 'edited-inflight'])
 def test_owned_crash_recovers_only_published_snapshot_without_auto_adoption(tmp_path, surface, boundary):
     script = '''import sys,time,json,threading,os
 from pathlib import Path

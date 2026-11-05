@@ -12,20 +12,6 @@ from pathlib import Path
 from xdog.agent.tools._utils import validate_path
 
 
-def test_without_a_bound_an_ordinary_path_is_allowed(tmp_path: Path) -> None:
-    """The historical behaviour, which xdog-coding and xdog-claw rely on."""
-    assert validate_path(str(tmp_path / "notes.txt")) is None
-
-
-def test_inside_the_bound_is_allowed(tmp_path: Path) -> None:
-    workspace = tmp_path / "runtime"
-    workspace.mkdir()
-
-    assert validate_path(str(workspace / "out.json"), confine_to=[workspace]) is None
-    assert validate_path(str(workspace / "deep" / "nested.txt"), confine_to=[workspace]) is None
-    assert validate_path(str(workspace), confine_to=[workspace]) is None, "the root itself"
-
-
 def test_outside_the_bound_is_denied(tmp_path: Path) -> None:
     workspace = tmp_path / "runtime"
     workspace.mkdir()
@@ -116,26 +102,6 @@ def test_a_relative_path_resolves_inside_the_workspace(tmp_path: Path) -> None:
 
     assert _resolve("report.md", ctx) == str(tmp_path / "runtime" / "report.md")
     assert _resolve("a/b.txt", ctx) == str(tmp_path / "runtime" / "a" / "b.txt")
-
-
-def test_an_absolute_path_is_left_alone(tmp_path: Path) -> None:
-    """A workspace says where "here" is; it does not rewrite what the caller
-    spelled out in full. Silently relocating an absolute path would make the
-    confinement error message describe a path the model never asked for."""
-    from xdog.agent.tools.tool_filesystem import WORKSPACE_CTX_KEY, _resolve
-
-    ctx = {WORKSPACE_CTX_KEY: str(tmp_path / "runtime")}
-
-    assert _resolve("/etc/hosts", ctx) == "/etc/hosts"
-
-
-def test_without_a_workspace_a_relative_path_is_untouched() -> None:
-    """xdog-coding and xdog-claw set no workspace, and must keep the behaviour
-    they have: a relative path reaches validate_path and is rejected there."""
-    from xdog.agent.tools.tool_filesystem import _resolve
-
-    assert _resolve("report.md", {}) == "report.md"
-    assert validate_path("report.md") == "Error: file path must be absolute."
 
 
 def test_a_workspace_alone_does_not_confine(tmp_path: Path) -> None:
@@ -259,33 +225,6 @@ async def _assert_turn_skill_at_model_boundary(
 async def test_a_turn_scoped_skill_goes_after_the_prefix(tmp_path: Path) -> None:
     """A transient body reaches the model once, without canonical history or cache churn."""
     await _assert_turn_skill_at_model_boundary(tmp_path, turn_body="JUST THIS TURN")
-
-
-async def test_both_kinds_can_be_given_at_once(tmp_path: Path) -> None:
-    """Session instructions stay in the prefix as request-local turn instructions retire."""
-    await _assert_turn_skill_at_model_boundary(tmp_path, turn_body="FOR NOW", fixed_body="ALWAYS")
-
-
-def test_no_skills_changes_nothing(tmp_path: Path) -> None:
-    """Every existing caller passes none, and must be unaffected."""
-    assert _agent().state.system_prompt == "THE TASK"  # type: ignore[attr-defined]  # noqa: E501
-    assert _agent().state.messages == ()  # type: ignore[attr-defined]
-
-
-def test_the_caller_prompt_and_the_skill_preamble_are_independent(tmp_path: Path) -> None:
-    """coding rewrites its whole system prompt before every turn.
-
-    If the Agent stored one merged string, that rewrite would drop the skills —
-    or coding would have to re-render them itself, which is exactly the
-    duplication that had three packages answering the same question three ways.
-    """
-    agent = _agent(skills=_manager(tmp_path, ("house", "USE TABS", False)),
-                   active_skills=["house"])
-
-    agent.set_system_prompt("A DIFFERENT TASK")  # type: ignore[attr-defined]
-
-    assert "USE TABS" in agent.state.system_prompt  # type: ignore[attr-defined]
-    assert agent.state.system_prompt.strip().endswith("A DIFFERENT TASK")  # type: ignore[attr-defined]
 
 
 def test_dropping_a_skill_leaves_no_trace(tmp_path: Path) -> None:

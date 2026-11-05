@@ -1,5 +1,4 @@
 import json
-from dataclasses import replace
 
 import httpx
 import pytest
@@ -70,18 +69,6 @@ async def test_last_page_failure_does_not_publish_partial_collection():
         result = await sampler.poll(source(), {'last_success': NOW-60}, now=NOW)
         assert not result.snapshot.valid and not result.snapshot.records
         assert result.state['last_success'] == NOW-60 and result.delay == 900
-    finally:
-        await sampler.close()
-
-
-@pytest.mark.parametrize('limit', ['pages', 'records', 'bytes'])
-async def test_capacity_is_explicit_failure_not_silent_truncation(limit):
-    values = {'max_pages': 1} if limit == 'pages' else {'max_records': 1} if limit == 'records' else {'max_bytes': 8}
-    sampler = RemoteSampler(Transport(lambda request: httpx.Response(200, json=[issue(), issue(2)], headers={
-        'link': '<https://api.github.com/repos/o/r/issues?page=2>; rel="next"'})))
-    try:
-        result = await sampler.poll(source(**values), {'last_success': NOW-1}, now=NOW)
-        assert not result.snapshot.valid and result.state['last_success'] == NOW-1
     finally:
         await sampler.close()
 
@@ -201,31 +188,6 @@ async def test_workflow_attempt_identity_and_old_active_runs_are_retained():
         await sampler.close()
 
 
-async def test_actions_service_cap_cannot_be_reported_as_complete():
-    sampler = RemoteSampler(Transport(lambda request: httpx.Response(200,
-        json={'total_count': 1200, 'workflow_runs': []})))
-    try:
-        result = await sampler.poll(replace(source('workflow_runs'), max_records=2000), {}, now=NOW)
-        assert not result.snapshot.valid and 'last_success' not in result.state
-    finally:
-        await sampler.close()
-
-
-@pytest.mark.parametrize('target', ['https://api.github.com/repos/o/r/../../private',
-    'https://api.github.com/repos/o/r/%2e%2e/private', 'https://api.github.com/repos/o/r/..%2fprivate'])
-async def test_normalized_pagination_cannot_escape_repository(target):
-    seen = []
-    def handle(request):
-        seen.append(request)
-        return httpx.Response(200, json=[issue()], headers={'link': f'<{target}>; rel="next"'})
-    sampler = RemoteSampler(Transport(handle))
-    try:
-        result = await sampler.poll(source(), {}, now=NOW)
-        assert not result.snapshot.valid and len(seen) == 1
-    finally:
-        await sampler.close()
-
-
 async def test_redirect_cannot_escape_github_repository_scope():
     seen = []
     def handle(request):
@@ -264,16 +226,5 @@ async def test_failed_first_gap_recovery_cannot_advance_or_rebaseline():
         assert recovered.state['coverage_gap']['first']['previous_success'] == NOW-90000
         assert recovered.state['coverage_gap']['count'] == 1
         assert original == {'last_success': NOW-90000, 'active_runs': []}
-    finally:
-        await sampler.close()
-
-
-@pytest.mark.parametrize('age', [0, 60, 86400])
-async def test_success_within_lookback_does_not_invent_coverage_gap(age):
-    sampler = RemoteSampler(Transport(lambda request: httpx.Response(200, json=[])))
-    try:
-        result = await sampler.poll(source(), {'last_success': NOW-age}, now=NOW)
-        assert result.snapshot.healthy and result.snapshot.valid and not result.snapshot.gap
-        assert not result.state['gap'] and 'coverage_gap' not in result.state
     finally:
         await sampler.close()

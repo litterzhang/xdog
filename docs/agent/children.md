@@ -144,7 +144,10 @@ its own execution/acceptance tasks and Goal reports, not a duplicate worker stat
 `task_cli` remains an explicitly permission-gated fallback for external workers or
 hosts without scoped tools, never an automatic escape after delegation denial.
 
-### Evidence for v2.4.5
+### Historical evidence for v2.4.5
+
+The file paths/counts below describe the historical suite, since consolidated.
+See [current testing scope](../development/testing.md) for retained tests and gaps.
 
 - Domain task safety: `packages/skills/tests/goal/test_child_tools.py` (90 cases).
 - Actual Goal capability admission: `test_child_capability.py` (11 cases).

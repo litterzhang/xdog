@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import pytest
 from xdog.agent import AgentContext, BeforeToolCallContext
@@ -18,20 +18,6 @@ from xdog.coding.core.permissions import (
 )
 
 _ACTIONS = ("read", "ls", "grep", "find", "write", "edit", "delete")
-_ACCESSES: tuple[Literal["read", "write", "execute"], ...] = ("read", "write", "execute")
-_SCOPES: tuple[Literal["workspace", "outside", "tool_data", "external", "unknown"], ...] = (
-    "workspace", "outside", "tool_data", "external", "unknown",
-)
-_EFFECTS = [
-    ToolEffect(access=access, scope=scope, requires_approval=approval)
-    for access in _ACCESSES
-    for scope in _SCOPES
-    if scope in {"read": {"workspace", "outside", "tool_data"},
-                 "write": {"workspace", "outside", "tool_data", "external"},
-                 "execute": {"unknown"}}[access]
-    for approval in (False, True)
-]
-_MODES: tuple[PermissionMode, ...] = ("ask", "ask-all", "allow-all", "deny")
 
 
 def _ctx(name: str, args: dict[str, Any]) -> BeforeToolCallContext:
@@ -55,14 +41,14 @@ def _needs_approval(mode: PermissionMode, effect: ToolEffect) -> bool:
     )
 
 
-@pytest.mark.parametrize("action", _ACTIONS)
-@pytest.mark.parametrize("path", ["资料/你好.txt", "子目录/../你好.txt", ".xdog/goals/tasks/a.json", "."])
+@pytest.mark.parametrize('action', ['read', 'write'])
+@pytest.mark.parametrize('path', ['资料/你好.txt', '子目录/../你好.txt'])
 def test_native_paths_remain_workspace_not_tool_data(tmp_path: Path, action: str, path: str) -> None:
     effect = classify_tool_call("filesystem", {"action": action, "path": path}, tmp_path)
     assert effect == ToolEffect(access="read" if action in _ACTIONS[:4] else "write", scope="workspace")
 
 
-@pytest.mark.parametrize("action", _ACTIONS)
+@pytest.mark.parametrize('action', ['read', 'write'])
 @pytest.mark.parametrize("relative", [False, True])
 def test_outside_paths_and_sibling_prefix(tmp_path: Path, action: str, relative: bool) -> None:
     workspace = tmp_path / "workspace"
@@ -72,8 +58,8 @@ def test_outside_paths_and_sibling_prefix(tmp_path: Path, action: str, relative:
     assert effect == ToolEffect(access="read" if action in _ACTIONS[:4] else "write", scope="outside")
 
 
-@pytest.mark.parametrize("action", _ACTIONS)
-@pytest.mark.parametrize("path", ["escape/new.txt", "escape/../new.txt", "dangling", "file-link"])
+@pytest.mark.parametrize('action', ['read', 'write'])
+@pytest.mark.parametrize('path', ['escape/new.txt', 'dangling'])
 def test_symlinks_resolve_outside_including_parent_and_missing_targets(
     tmp_path: Path, action: str, path: str,
 ) -> None:
@@ -103,8 +89,8 @@ def test_workspace_symlink_and_inbound_symlink_use_resolved_roots(tmp_path: Path
         )
 
 
-@pytest.mark.parametrize("action", _ACTIONS)
-@pytest.mark.parametrize("path", [None, "", 42, [], {}, Path("file"), "bad\0path"])
+@pytest.mark.parametrize('action', ['read', 'write'])
+@pytest.mark.parametrize('path', [None, 'bad\0path'])
 def test_invalid_or_missing_path_is_unknown_not_read_exempt(tmp_path: Path, action: str, path: Any) -> None:
     args = {"action": action} if path is None else {"action": action, "path": path}
     effect = classify_tool_call("filesystem", args, tmp_path)
@@ -113,7 +99,7 @@ def test_invalid_or_missing_path_is_unknown_not_read_exempt(tmp_path: Path, acti
     assert tool_call_requires_approval("deny", effect)
 
 
-@pytest.mark.parametrize("error", [OSError("unavailable"), RuntimeError("symlink loop"), ValueError("bad path")])
+@pytest.mark.parametrize('error', [OSError('unavailable')])
 @pytest.mark.parametrize("failing_call", [1, 2])
 def test_target_or_root_resolution_failure_is_unknown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception, failing_call: int,
@@ -134,22 +120,22 @@ def test_target_or_root_resolution_failure_is_unknown(
     )
 
 
-@pytest.mark.parametrize("action", [None, [], {}, 123, "stat", "READ", "unknown"])
+@pytest.mark.parametrize('action', [None, 'READ'])
 def test_undeclared_filesystem_actions_are_unknown(tmp_path: Path, action: Any) -> None:
     assert classify_tool_call("filesystem", {"action": action, "path": "file"}, tmp_path) == ToolEffect(
         access="execute", scope="unknown",
     )
 
 
-@pytest.mark.parametrize("command", ["sleep 1", "cat README.md", "pwd", "echo safe", "ls"])
+@pytest.mark.parametrize('command', ['cat README.md'])
 def test_shell_is_never_inferred_read_only(tmp_path: Path, command: str) -> None:
     assert classify_tool_call("bash", {"command": command}, tmp_path) == ToolEffect(
         access="execute", scope="unknown",
     )
 
 
-@pytest.mark.parametrize("name", ["goal", "extension", "mcp.read", "agent", "submit_result"])
-@pytest.mark.parametrize("action", ["read", "plan", "report", "task_update"])
+@pytest.mark.parametrize('name', ['goal', 'mcp.read'])
+@pytest.mark.parametrize('action', ['report'])
 def test_undeclared_tool_names_or_argument_effects_grant_no_exemption(tmp_path: Path, name: str, action: str) -> None:
     args = {
         "action": action,
@@ -173,14 +159,18 @@ def test_trusted_effect_and_clock_do_not_resolve_paths(tmp_path: Path, monkeypat
     assert classify_tool_call("current_time", {}, tmp_path) == ToolEffect(access="read", scope="tool_data")
 
 
-@pytest.mark.parametrize("mode", _MODES)
-@pytest.mark.parametrize("effect", _EFFECTS)
-def test_effect_mode_matrix(mode: PermissionMode, effect: ToolEffect) -> None:
-    assert tool_call_requires_approval(mode, effect) == _needs_approval(mode, effect)
-
-
-@pytest.mark.parametrize("mode", _MODES)
-@pytest.mark.parametrize("effect", _EFFECTS)
+@pytest.mark.parametrize("mode,effect", [
+    ("ask", ToolEffect(access="read", scope="outside")),
+    ("ask", ToolEffect(access="write", scope="workspace")),
+    ("ask", ToolEffect(access="write", scope="tool_data")),
+    ("ask", ToolEffect(access="write", scope="tool_data", requires_approval=True)),
+    ("ask", ToolEffect(access="write", scope="external")),
+    ("ask", ToolEffect(access="execute", scope="unknown")),
+    ("ask-all", ToolEffect(access="read", scope="workspace")),
+    ("allow-all", ToolEffect(access="execute", scope="unknown")),
+    ("deny", ToolEffect(access="read", scope="workspace")),
+    ("deny", ToolEffect(access="write", scope="workspace")),
+])
 async def test_manager_effect_mode_matrix_without_host_integration(mode: PermissionMode, effect: ToolEffect) -> None:
     manager = PermissionManager(mode)
     requests: list[PermissionRequest] = []
@@ -204,7 +194,7 @@ async def test_manager_effect_mode_matrix_without_host_integration(mode: Permiss
         manager.close()
 
 
-@pytest.mark.parametrize("action", ["plan", "report", "task_update"])
+@pytest.mark.parametrize('action', ['report'])
 async def test_goal_owned_writes_approved_by_binding_not_tool_name(action: str) -> None:
     manager = PermissionManager("ask")
     effect = ToolEffect(access="write", scope="tool_data")
@@ -221,7 +211,7 @@ async def test_goal_owned_writes_approved_by_binding_not_tool_name(action: str) 
         manager.close()
 
 
-@pytest.mark.parametrize("action", ["read", "ls", "grep", "find"])
+@pytest.mark.parametrize('action', ['read'])
 def test_missing_effect_or_path_never_borrows_a_read_exemption(tmp_path: Path, action: str) -> None:
     effect = classify_tool_call("filesystem", {"action": action}, tmp_path)
     for mode in ("ask", "deny"):

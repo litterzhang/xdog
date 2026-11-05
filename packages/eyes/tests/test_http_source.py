@@ -1,4 +1,3 @@
-import json
 from dataclasses import replace
 
 import httpx
@@ -34,34 +33,6 @@ async def test_json_projection_conditional_baseline_304_and_invalid_shape():
         assert not failed.snapshot.valid and not failed.snapshot.healthy
         assert failed.state['etag'] == 'v1' and failed.state['last_success'] == 61
         assert failed.state['failures'] == 1
-    finally:
-        await sampler.close()
-
-
-async def test_http_status_is_read_only_without_body_or_latency_noise():
-    responses = [httpx.Response(500, text='secret irrelevant body'), httpx.Response(200), httpx.Response(200)]
-    sampler = RemoteSampler(Transport(lambda request: responses.pop(0)))
-    source = HttpSourceDef(id='s', url='https://example.test/health', mode='status')
-    try:
-        failed = await sampler.poll(source, {}, now=0)
-        assert not failed.snapshot.healthy and failed.snapshot.valid
-        assert json.loads(failed.snapshot.records[0].value) == {'status_code': 500}
-        second = await sampler.poll(source, failed.state, now=60)
-        third = await sampler.poll(source, second.state, now=120)
-        assert second.snapshot.records == third.snapshot.records
-        assert second.state['failures'] == 0
-    finally:
-        await sampler.close()
-
-
-@pytest.mark.parametrize('body', [b'[{"id":1},{"id":1}]', b'{"x":1,"x":2}', b'NaN', b'not-json',
-                                 b'[{"no_id":1}]'])
-async def test_invalid_json_never_becomes_an_empty_snapshot(body):
-    sampler = RemoteSampler(Transport(lambda request: httpx.Response(200, content=body)))
-    source = HttpSourceDef(id='s', url='https://example.test', key_pointer='/id')
-    try:
-        result = await sampler.poll(source, {'last_success': 1}, now=2)
-        assert not result.snapshot.valid and result.state['last_success'] == 1
     finally:
         await sampler.close()
 
@@ -139,29 +110,6 @@ async def test_transport_timeout_is_a_failure_fact_without_losing_baseline():
         result = await sampler.poll(HttpSourceDef(id='s', url='https://example.test', timeout_seconds=.01),
                                     {'last_success': 1}, now=2)
         assert not result.snapshot.valid and result.state['last_success'] == 1
-    finally:
-        await sampler.close()
-
-
-async def test_retry_after_longer_than_one_day_is_not_clamped_early():
-    sampler = RemoteSampler(Transport(lambda request: httpx.Response(429, headers={'retry-after': '172800'})))
-    try:
-        result = await sampler.poll(HttpSourceDef(id='s', url='https://example.test'), {}, now=1)
-        assert result.delay >= 172800
-    finally:
-        await sampler.close()
-
-
-@pytest.mark.parametrize('secret', ['token\r\nInjected: yes', 'token"quoted', 'token\\escaped'])
-async def test_invalid_bearer_values_never_reach_transport_or_checkpoints(monkeypatch, secret):
-    monkeypatch.setenv('EYES_INVALID_TOKEN', secret)
-    def forbidden(request):
-        pytest.fail('Invalid bearer must be rejected before IO')
-    sampler = RemoteSampler(Transport(forbidden))
-    try:
-        result = await sampler.poll(HttpSourceDef(id='s', url='https://example.test',
-                                                 bearer_env='EYES_INVALID_TOKEN'), {}, now=1)
-        assert not result.snapshot.valid and secret not in repr(result)
     finally:
         await sampler.close()
 

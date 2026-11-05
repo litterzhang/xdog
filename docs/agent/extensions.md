@@ -98,9 +98,10 @@ This generic foundation contains no Goal imports/schema or TUI renderer. The
 shared packaged Goal projection/extension and actual two-host binding follow in
 `docs/archive/superpowers/plans/2026-10-19-shared-goal-extension-views.md`; they are not
 claimed implemented by this document. Real worker tests are in
-`packages/agent/tests/test_extension_views.py`, including headless reads, forged
-flags, cross-extension refusal, bounded codecs, in-flight revocation, callback
-publication after binding replacement, dormant/unloaded lifecycle and coalescing.
+`packages/agent/tests/test_extension_views.py`. The current risk-driven suite retains
+headless real-worker grants, forged/cross-extension refusal, pinned owner snapshots,
+in-flight revocation and callback publication after binding replacement. The dated
+verification below describes the earlier, larger matrix; it is not a fresh run.
 
 ### Foundation verification (2026-10-19)
 

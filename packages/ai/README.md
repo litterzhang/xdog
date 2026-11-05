@@ -476,20 +476,13 @@ not match the target item id`, start a new conversation. Restarting the proxy
 cannot repair a mismatched ID/ciphertext pair already stored in client history;
 the encrypted payload is opaque and must not be reassigned to a generated ID.
 
-### Optional Codex client integration tests
+### Validation scope
 
-With Codex CLI 0.154 installed, run:
-
-```bash
-XDOG_TEST_CODEX_CLI=1 uv run pytest packages/ai/tests/test_proxy_codex_cli.py -q
-```
-
-These use an isolated read-only workspace and a loopback mock provider—no paid
-upstream calls. They cover standard requests, Responses Lite namespaces with
-custom tools, and a real namespace tool-call/result round trip using Codex's
-read-only `collaboration.list_agents` tool, including encrypted reasoning ID
-preservation during replay with provisional and opaque Copilot-style IDs.
-Hosted web search is disabled.
+The main pytest suite retains controlled, offline model-capability, native-wire,
+tool-result and proxy lifecycle contracts. The former version-specific real Codex
+CLI matrix is not retained; passing the main suite is not proof of compatibility
+with every third-party client version or a live upstream provider. See
+[testing scope and accepted gaps](../../docs/development/testing.md).
 
 ## Part of xdog
 

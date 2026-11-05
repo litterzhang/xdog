@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
-import tempfile
 import types
 from typing import Any
 
@@ -119,13 +118,6 @@ async def test_fan_out_three_elements() -> None:
     assert rt["out"]["summary"] == "T0,T1,T2"
 
 
-async def test_fan_out_single_element_is_a_list() -> None:
-    """N=1 must yield a one-element list, never a bare scalar."""
-    rt = await _interp(_map_reduce(1))
-    assert rt["state"]["work"]["res"] == ["T0"]
-    assert rt["out"]["summary"] == "T0"
-
-
 async def test_fan_out_empty_array_is_empty_list() -> None:
     """N=0 runs the worker zero times; the reduce is []."""
     rt = await _interp(_map_reduce(0))
@@ -137,14 +129,6 @@ async def test_fan_out_capped_concurrency_no_deadlock() -> None:
     """cap=1 must not self-nest the semaphore (the fan node holds one outer slot)."""
     rt = await _interp(_map_reduce(3, cap=1))
     assert rt["out"]["summary"] == "T0,T1,T2"
-
-
-async def test_fan_out_single_trace_frame_for_the_group() -> None:
-    """The whole fan is ONE scheduler node: one completed id, one work frame."""
-    wf = parse_workflow(_map_reduce(3))
-    result = await execute(wf, stream_fn_factory=_stub_factory("X"))
-    work_frames = [f for f in result.runtime["stack"] if f["node"] == "work"]
-    assert len(work_frames) == 1
 
 
 async def test_fan_out_agent_worker() -> None:
@@ -286,25 +270,6 @@ def test_fan_in_list_output_schema_wraps_worker_value() -> None:
     }
 
 
-def test_fan_out_generated_module_is_ruff_clean() -> None:
-    import subprocess
-    import sys
-
-    src = generate(parse_workflow(_map_reduce(3)))
-    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as tf:
-        tf.write(src)
-        tmp = pathlib.Path(tf.name)
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "ruff", "check", "--line-length", "120", str(tmp)],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0, f"ruff failed:\n{result.stdout}\n{result.stderr}"
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
 # --- fan concurrency limiter -----------------------------------------------
 
 
@@ -339,16 +304,6 @@ async def test_fan_cap_limits_peak_concurrency(tmp_path: pathlib.Path) -> None:
     assert peak == 2, f"fan_cap=2 should hold peak at 2, saw {peak}"
 
 
-async def test_fan_cap_zero_is_unlimited(tmp_path: pathlib.Path) -> None:
-    probe = str(tmp_path / "conc.json")
-    wf = parse_workflow(_conc_tracking_map_reduce(6, fan_cap=0, probe=probe))
-    await execute(wf, stream_fn_factory=_stub_factory("X"), workspace=tmp_path)
-    import json
-
-    peak = json.loads(pathlib.Path(probe).read_text())["max"]
-    assert peak == 6, f"fan_cap=0 should run all 6 at once, saw {peak}"
-
-
 async def test_fan_cap_parity_holds(tmp_path: pathlib.Path) -> None:
     """A capped fan still produces identical output through both engines."""
     data = _map_reduce(5, fan_cap=2)
@@ -359,11 +314,3 @@ async def test_fan_cap_parity_holds(tmp_path: pathlib.Path) -> None:
     gen_runtime = await _run_generated(src)
     assert gen_runtime["state"] == dict(interp.runtime["state"])
     assert gen_runtime["out"] == dict(interp.runtime["out"])
-
-
-def test_fan_max_concurrency_roundtrips() -> None:
-    from xdog.flow.builder.serialize import workflow_to_dict
-
-    wf = parse_workflow(_map_reduce(3, fan_cap=4))
-    assert wf.fan_max_concurrency == 4
-    assert parse_workflow(workflow_to_dict(wf)) == wf

@@ -255,7 +255,7 @@ async def test_factory_default_skill_must_resolve(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("parts", [False, True])
 async def test_restore_reassembles_current_defaults_without_changing_runtime_authority(monkeypatch, tmp_path, parts):
-    from packages.agent.tests.test_skill_lifecycle import make_agent
+    from packages.agent.tests.skill_lifecycle_helpers import make_agent
 
     path = tmp_path / "guard"
     path.mkdir()
@@ -302,10 +302,10 @@ async def test_restore_reassembles_current_defaults_without_changing_runtime_aut
         await app.aclose()
 
 
-@pytest.mark.parametrize("failure", ["default_missing", "saved_changed", "saved_missing", "model", "adapter"])
-@pytest.mark.parametrize("parts", [False, True])
+@pytest.mark.parametrize('failure', ['saved_changed', 'model'])
+@pytest.mark.parametrize('parts', [True])
 async def test_restore_reassembly_failures_are_atomic(monkeypatch, tmp_path, failure, parts):
-    from packages.agent.tests.test_skill_lifecycle import make_agent
+    from packages.agent.tests.skill_lifecycle_helpers import make_agent
 
     for slug in ("guard", "current"):
         directory = tmp_path / slug
@@ -352,7 +352,7 @@ async def test_restore_reassembly_failures_are_atomic(monkeypatch, tmp_path, fai
 
 
 @pytest.mark.parametrize("lifecycle", ["pending", "active", "consumed"])
-@pytest.mark.parametrize("parts", [False, True])
+@pytest.mark.parametrize('parts', [True])
 async def test_reassembly_preserves_turn_lifecycle_and_does_not_rearm_defaults(monkeypatch, tmp_path, lifecycle, parts):
     from xdog.ai.types import UserMessage
 

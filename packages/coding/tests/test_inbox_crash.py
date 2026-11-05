@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from packages.coding.tests.test_inbox_store import box as inbox_box
+from packages.coding.tests.inbox_store_helpers import box as inbox_box
 
 box = inbox_box
 

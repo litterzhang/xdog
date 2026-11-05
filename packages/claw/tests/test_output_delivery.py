@@ -10,8 +10,8 @@ from xdog.claw.core.runtime.input_adapter import freeze_input
 from xdog.claw.core.types import UserInput
 
 from packages.claw.tests.eyes_helpers import ScriptedModel
-from packages.claw.tests.test_weixin_application_intake import application, sent_parts, text
-from packages.claw.tests.test_weixin_monitor import wait
+from packages.claw.tests.weixin_application_intake_helpers import application, sent_parts, text
+from packages.claw.tests.weixin_monitor_helpers import wait
 
 
 def envelope(tmp_path, group="main"):
@@ -211,7 +211,7 @@ async def test_cancellation_after_begin_commit_before_sender_remains_proven_not_
 async def test_actual_channel_stream_keeps_progress_and_final_separate_with_durable_ids(tmp_path):
     from xdog.ai.types import AssistantMessage, TextContent
 
-    from packages.claw.tests.test_orchestrator import _progress_message, _scripted_stream_fn
+    from packages.claw.tests.orchestrator_helpers import _progress_message, _scripted_stream_fn
 
     path = tmp_path / "evidence.txt"
     path.write_text("actual tool evidence")

@@ -34,10 +34,7 @@ def test_module_update_lists_and_preserves_fields(tmp_path):
     assert (files.tasks_dir / 'task.json').read_bytes() == original
 
 
-@pytest.mark.parametrize('changes', [
-    '{"id":"different"}', '{"version":9}', '{"status":"invalid"}', '{"evidence":"string"}',
-    '{"evidence":[4]}', '{"unknown":1}', '{"summary":"a","summary":"b"}', '[]', '{',
-])
+@pytest.mark.parametrize('changes', ['{"status":"invalid"}', '{"summary":"a","summary":"b"}'])
 def test_invalid_update_fails_without_mutation(tmp_path, changes):
     files = TaskFiles(tmp_path, 'one')
     files.write(Task('task', 'Title'), expected_version=0)

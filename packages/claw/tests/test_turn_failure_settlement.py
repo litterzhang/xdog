@@ -8,9 +8,9 @@ from xdog.ai.types import AssistantMessage, DoneEvent, StartEvent, TextContent
 from xdog.ai.utils.event_stream import EventStream
 from xdog.claw.core.inputs.models import InputScope
 
-from packages.claw.tests.test_orchestrator import _progress_message
-from packages.claw.tests.test_weixin_application_intake import application, text
-from packages.claw.tests.test_weixin_monitor import wait
+from packages.claw.tests.orchestrator_helpers import _progress_message
+from packages.claw.tests.weixin_application_intake_helpers import application, text
+from packages.claw.tests.weixin_monitor_helpers import wait
 
 
 @pytest.mark.parametrize('persist_failure', [False, True])

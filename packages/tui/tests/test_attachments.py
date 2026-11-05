@@ -119,7 +119,6 @@ def test_editor_image_only_submit_and_summary_stays_within_tiny_budget():
     assert sent == [""]
 
 
-
 def test_explicit_clear_fences_pending_reads_but_send_keeps_late_result_editable(tmp_path):
     notices, pasted = [], []
     composer = AttachmentComposer(lambda event: None, lambda: None, notices.append, pasted.append, lambda item: None)
